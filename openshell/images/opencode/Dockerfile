@@ -10,7 +10,8 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 # Upstream moved to github.com/anomalyco/opencode. Its releases publish no checksum file, only
 # GitHub's per-asset sha256 digest, so the per-arch digests below are pinned here and MUST be
-# refreshed together with OPENCODE_VERSION:
+# refreshed together with OPENCODE_VERSION by running
+#   openshell/images/refresh-checksums.sh   (CI runs it with --check). Manual equivalent:
 #   gh api repos/anomalyco/opencode/releases/tags/v<ver> --jq '.assets[]|select(.name|test("^opencode-linux-(x64|arm64)\\.tar\\.gz$"))|.name+" "+.digest'
 # renovate: datasource=github-releases depName=anomalyco/opencode
 ARG OPENCODE_VERSION=1.19.3

@@ -9,17 +9,23 @@ GO := go
 GOFLAGS := -v
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
+# Pinned to match .github/workflows/test.yml
+ACTIONLINT_VERSION := v1.7.12
+
 # Directories
 SRC_DIR := ./cmd/agent-run
 PKG_DIR := ./internal/agentrun
 BUILD_DIR := ./bin
 
-.PHONY: all build clean test lint install setup help images image-claude image-pi image-opencode smoke lint-images
+.PHONY: all build clean test lint install setup help images image-claude image-pi image-opencode smoke lint-images lint-ci
 
 # Extra flags for tests/images/smoke.sh (e.g. SMOKE_FLAGS=--skip-network).
 # --skip-policy-contract is temporary: sandbox-policy.yaml still lists paths no image provides;
 # WP4b removes them and this default (run `make smoke SMOKE_FLAGS=` for the strict check).
 SMOKE_FLAGS ?= --skip-policy-contract
+
+# Harnesses covered by `make smoke` (CI passes one, e.g. `make smoke HARNESSES=pi`).
+HARNESSES ?= claude pi opencode
 
 ## all: Build the binary
 all: build
@@ -101,7 +107,7 @@ image-opencode:
 
 ## smoke: Smoke-test all locally built harness images (run make images first)
 smoke:
-	@for h in claude pi opencode; do \
+	@for h in $(HARNESSES); do \
 		./tests/images/smoke.sh localhost/agent-$$h:local $$h $(SMOKE_FLAGS) || exit 1; \
 	done
 
@@ -110,7 +116,11 @@ lint-images:
 	@which hadolint > /dev/null 2>&1 || { echo "hadolint not found. Install: brew install hadolint"; exit 1; }
 	@which shellcheck > /dev/null 2>&1 || { echo "shellcheck not found. Install: brew install shellcheck"; exit 1; }
 	hadolint openshell/images/*/Dockerfile
-	shellcheck openshell/images/build.sh openshell/images/version.sh tests/images/smoke.sh
+	shellcheck openshell/images/build.sh openshell/images/version.sh tests/images/smoke.sh openshell/images/refresh-checksums.sh
+
+## lint-ci: Lint GitHub Actions workflows (actionlint, run via go)
+lint-ci:
+	$(GO) run github.com/rhysd/actionlint/cmd/actionlint@$(ACTIONLINT_VERSION)
 
 ## help: Show this help message
 help:
