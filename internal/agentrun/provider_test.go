@@ -1,19 +1,33 @@
 package agentrun
 
 import (
+	"errors"
+	"slices"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 // mockCmd records calls and returns a configurable error.
 type mockCmd struct {
 	calls      [][]string
+	envs       [][]string // env passed with each execCmdEnv call (parallel to envCalls)
+	envCalls   [][]string // argv of each execCmdEnv call
 	err        error
 	execOutput func(string, ...string) (string, error)
 }
 
 func (m *mockCmd) exec(name string, args ...string) error {
 	m.calls = append(m.calls, append([]string{name}, args...))
+	return m.err
+}
+
+func (m *mockCmd) execEnv(env []string, name string, args ...string) error {
+	call := append([]string{name}, args...)
+	m.calls = append(m.calls, call)
+	m.envCalls = append(m.envCalls, call)
+	m.envs = append(m.envs, env)
 	return m.err
 }
 
@@ -30,7 +44,9 @@ func withMockExec(t *testing.T, fn func(mock *mockCmd)) {
 	origCmd := execCmdFn
 	origSilent := execCmdSilentFn
 	origOutput := execCmdOutputFn
+	origEnv := execCmdEnvFn
 	defer func() {
+		execCmdEnvFn = origEnv
 		execCmdFn = origCmd
 		execCmdSilentFn = origSilent
 		execCmdOutputFn = origOutput
@@ -40,7 +56,38 @@ func withMockExec(t *testing.T, fn func(mock *mockCmd)) {
 	execCmdFn = m.exec
 	execCmdSilentFn = m.exec
 	execCmdOutputFn = m.defaultExecOutput
+	execCmdEnvFn = m.execEnv
 	fn(m)
+	assertNoSecretsInArgv(t, m)
+}
+
+// assertNoSecretsInArgv enforces the credential contract on every constructed
+// command: values handed to a child via its environment never appear in any
+// argv, and every --credential is the bare KEY form (no "=VALUE").
+func assertNoSecretsInArgv(t *testing.T, m *mockCmd) {
+	t.Helper()
+	for _, env := range m.envs {
+		for _, kv := range env {
+			_, v, _ := strings.Cut(kv, "=")
+			if v == "" {
+				continue
+			}
+			for _, c := range m.calls {
+				for _, a := range c {
+					if a == v || strings.HasSuffix(a, "="+v) || (len(v) >= 8 && strings.Contains(a, v)) {
+						t.Errorf("secret value for %q leaked into argv: %v", strings.SplitN(kv, "=", 2)[0], c)
+					}
+				}
+			}
+		}
+	}
+	for _, c := range m.calls {
+		for i, a := range c {
+			if a == "--credential" && i+1 < len(c) && strings.Contains(c[i+1], "=") {
+				t.Errorf("--credential must be the bare KEY form, got %q in %v", c[i+1], c)
+			}
+		}
+	}
 }
 
 func TestResolveInferenceEnv(t *testing.T) {
@@ -247,45 +294,229 @@ func TestCreateInferenceProviders(t *testing.T) {
 }
 
 func TestRunSandboxInitHook(t *testing.T) {
-	t.Run("claude maps ANTHROPIC_API_KEY", func(t *testing.T) {
+	// The providers store credentials under the env-var names the harnesses
+	// read, so the sandbox already carries those placeholders. Hooks must never
+	// export over them (an `export X="$api_key"` would set X to empty).
+	t.Run("claude with an API key needs no sandbox work", func(t *testing.T) {
+		t.Setenv("ANTHROPIC_API_KEY", "sk-test")
+		t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "")
 		withMockExec(t, func(mock *mockCmd) {
-			err := harnesses["claude"].InitHook()("test-sb")
-			if err != nil {
+			if err := harnesses["claude"].InitHook()("test-sb"); err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if len(mock.calls) != 1 {
-				t.Fatalf("expected 1 call, got %d", len(mock.calls))
-			}
-			cmd := strings.Join(mock.calls[0], " ")
-			if !strings.Contains(cmd, "ANTHROPIC_API_KEY") {
-				t.Error("expected ANTHROPIC_API_KEY in init hook")
+			if len(mock.calls) != 0 {
+				t.Errorf("unexpected calls: %v", mock.calls)
 			}
 		})
 	})
 
-	t.Run("claude maps CLAUDE_CODE_OAUTH_TOKEN when set", func(t *testing.T) {
+	t.Run("claude aliases the placeholder as CLAUDE_CODE_OAUTH_TOKEN when OAuth is the credential", func(t *testing.T) {
+		t.Setenv("ANTHROPIC_API_KEY", "")
 		t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "oauth-token")
 		withMockExec(t, func(mock *mockCmd) {
-			err := harnesses["claude"].InitHook()("test-sb")
-			if err != nil {
+			if err := harnesses["claude"].InitHook()("test-sb"); err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
 			cmd := strings.Join(mock.calls[0], " ")
-			if !strings.Contains(cmd, "CLAUDE_CODE_OAUTH_TOKEN") {
-				t.Error("expected CLAUDE_CODE_OAUTH_TOKEN in init hook")
+			if !strings.Contains(cmd, `CLAUDE_CODE_OAUTH_TOKEN="$ANTHROPIC_API_KEY"`) {
+				t.Errorf("expected alias from the placeholder-bearing var, got %s", cmd)
+			}
+			if strings.Contains(cmd, "$api_key") || strings.Contains(cmd, "oauth-token") {
+				t.Errorf("legacy key or secret in hook: %s", cmd)
 			}
 		})
 	})
 
-	t.Run("pi maps LITELLM_API_KEY", func(t *testing.T) {
+	t.Run("pi needs no sandbox work", func(t *testing.T) {
 		withMockExec(t, func(mock *mockCmd) {
-			err := harnesses["pi"].InitHook()("test-sb")
-			if err != nil {
+			if err := harnesses["pi"].InitHook()("test-sb"); err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			cmd := strings.Join(mock.calls[0], " ")
-			if !strings.Contains(cmd, "LITELLM_API_KEY") {
-				t.Error("expected LITELLM_API_KEY in init hook")
+			if len(mock.calls) != 0 {
+				t.Errorf("unexpected calls: %v", mock.calls)
+			}
+		})
+	})
+}
+
+// No sandbox-side script may assign from a legacy stored-key name
+// ($api_key, $api_token, $litellm_*): those no longer exist and expand empty.
+func TestNoLegacyCredentialKeysInHooks(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "o")
+	t.Setenv("LITELLM_API_KEY", "l")
+	for name, h := range harnesses {
+		withMockExec(t, func(mock *mockCmd) {
+			_ = h.InitHookFor(HarnessOptions{Inference: "litellm"})("sb")
+			_ = h.PreseedFor(HarnessOptions{Inference: "litellm"})("sb")
+			for _, c := range mock.calls {
+				joined := strings.Join(c, " ")
+				for _, legacy := range []string{"$api_key", "$api_token", "$litellm_"} {
+					if strings.Contains(joined, legacy) {
+						t.Errorf("%s: legacy key %s in %s", name, legacy, joined)
+					}
+				}
+			}
+		})
+	}
+	if strings.Contains(buildLaunchCmd(harnesses["claude"], &Config{}), "api_token") {
+		t.Error("launch command must not reference api_token")
+	}
+}
+
+func TestClaudeCredential(t *testing.T) {
+	cases := []struct {
+		name         string
+		env          map[string]string
+		wantVal, src string
+	}{
+		{"api key first", map[string]string{"ANTHROPIC_API_KEY": "a", "CLAUDE_CODE_OAUTH_TOKEN": "o"}, "a", "ANTHROPIC_API_KEY"},
+		{"oauth", map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "o", "ANTHROPIC_AUTH_TOKEN": "t"}, "o", "CLAUDE_CODE_OAUTH_TOKEN"},
+		{"auth token", map[string]string{"ANTHROPIC_AUTH_TOKEN": "t"}, "t", "ANTHROPIC_AUTH_TOKEN"},
+		{"none", nil, "none", ""},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, k := range []string{"ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_AUTH_TOKEN"} {
+				t.Setenv(k, tt.env[k])
+			}
+			v, src := claudeCredential(nil)
+			if v != tt.wantVal || src != tt.src {
+				t.Errorf("got (%q, %q), want (%q, %q)", v, src, tt.wantVal, tt.src)
+			}
+		})
+	}
+}
+
+// credentialEnv returns the KEY=VALUE env of the single execCmdEnv call whose
+// argv contains the provider --type, plus the declared --credential keys.
+func providerCreateCall(t *testing.T, m *mockCmd, typ string) (keys []string, env []string) {
+	t.Helper()
+	for i, c := range m.envCalls {
+		if !strings.Contains(strings.Join(c, " "), "--type "+typ) {
+			continue
+		}
+		for j, a := range c {
+			if a == "--credential" {
+				keys = append(keys, c[j+1])
+			}
+		}
+		return keys, m.envs[i]
+	}
+	t.Fatalf("no provider create for type %s in %v", typ, m.calls)
+	return nil, nil
+}
+
+func TestProviderCredentialKeysMatchProfiles(t *testing.T) {
+	// OpenShell 0.1.4 accepts only the profile's declared env_vars as stored
+	// keys (CredentialProfile::accepted_stored_keys).
+	declared := func(id string) map[string]bool {
+		data, err := profileData(id, profileFiles[id])
+		if err != nil {
+			t.Fatal(err)
+		}
+		var doc struct {
+			Credentials []struct {
+				Name    string   `yaml:"name"`
+				EnvVars []string `yaml:"env_vars"`
+			} `yaml:"credentials"`
+		}
+		if err := yaml.Unmarshal(data, &doc); err != nil {
+			t.Fatal(err)
+		}
+		m := map[string]bool{}
+		for _, c := range doc.Credentials {
+			for _, e := range c.EnvVars {
+				m[e] = true
+			}
+		}
+		return m
+	}
+
+	t.Run("github-agent", func(t *testing.T) {
+		withMockExec(t, func(m *mockCmd) {
+			if err := createProvider(GitHubProviderName, "github-agent", []credentialPair{
+				{"GITHUB_TOKEN", "ghs_secret"}, {"GH_TOKEN", "ghs_secret"}}); err != nil {
+				t.Fatal(err)
+			}
+			keys, env := providerCreateCall(t, m, "github-agent")
+			if !slices.Equal(keys, []string{"GITHUB_TOKEN", "GH_TOKEN"}) || !slices.Equal(env, []string{"GITHUB_TOKEN=ghs_secret", "GH_TOKEN=ghs_secret"}) {
+				t.Errorf("keys=%v env=%v", keys, env)
+			}
+			for _, k := range keys {
+				if !declared("github-agent")[k] {
+					t.Errorf("%s not declared by profile", k)
+				}
+			}
+		})
+	})
+
+	t.Run("claude-code", func(t *testing.T) {
+		t.Setenv("ANTHROPIC_API_KEY", "sk-ant-secret")
+		withMockExec(t, func(m *mockCmd) {
+			if _, _, err := createInferenceProviders(HarnessClaude, nil); err != nil {
+				t.Fatal(err)
+			}
+			keys, env := providerCreateCall(t, m, "claude-code")
+			if !slices.Equal(keys, []string{"ANTHROPIC_API_KEY"}) || !slices.Equal(env, []string{"ANTHROPIC_API_KEY=sk-ant-secret"}) {
+				t.Errorf("keys=%v env=%v", keys, env)
+			}
+			if !declared("claude-code")[keys[0]] {
+				t.Errorf("%s not declared by profile", keys[0])
+			}
+		})
+	})
+
+	t.Run("claude-code with oauth token stores it under ANTHROPIC_API_KEY", func(t *testing.T) {
+		t.Setenv("ANTHROPIC_API_KEY", "")
+		t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "oauth-secret")
+		withMockExec(t, func(m *mockCmd) {
+			if _, _, err := createInferenceProviders(HarnessClaude, nil); err != nil {
+				t.Fatal(err)
+			}
+			keys, env := providerCreateCall(t, m, "claude-code")
+			if !slices.Equal(keys, []string{"ANTHROPIC_API_KEY"}) || !slices.Equal(env, []string{"ANTHROPIC_API_KEY=oauth-secret"}) {
+				t.Errorf("keys=%v env=%v", keys, env)
+			}
+		})
+	})
+
+	t.Run("litellm-inference", func(t *testing.T) {
+		t.Setenv("LITELLM_API_KEY", "sk-l-secret")
+		withMockExec(t, func(m *mockCmd) {
+			if _, _, err := createInferenceProviders(HarnessPi, nil); err != nil {
+				t.Fatal(err)
+			}
+			keys, env := providerCreateCall(t, m, "litellm-inference")
+			if !slices.Equal(keys, []string{"LITELLM_API_KEY"}) || !slices.Equal(env, []string{"LITELLM_API_KEY=sk-l-secret"}) {
+				t.Errorf("keys=%v env=%v", keys, env)
+			}
+			if !declared("litellm-inference")[keys[0]] {
+				t.Errorf("%s not declared by profile", keys[0])
+			}
+		})
+	})
+
+	t.Run("anthropic", func(t *testing.T) {
+		withMockExec(t, func(m *mockCmd) {
+			t.Setenv("ANTHROPIC_API_KEY", "sk-a-secret")
+			t.Setenv("LITELLM_API_KEY", "")
+			if _, _, err := createInferenceProvidersFor(HarnessOpencode, "anthropic", nil); err != nil {
+				t.Fatal(err)
+			}
+			keys, _ := providerCreateCall(t, m, "anthropic")
+			if !slices.Equal(keys, []string{"ANTHROPIC_API_KEY"}) || !declared("anthropic")[keys[0]] {
+				t.Errorf("keys=%v", keys)
+			}
+		})
+	})
+
+	t.Run("create failure is reported", func(t *testing.T) {
+		t.Setenv("ANTHROPIC_API_KEY", "x")
+		withMockExec(t, func(m *mockCmd) {
+			m.err = errors.New("boom")
+			if _, _, err := createInferenceProviders(HarnessClaude, nil); err == nil {
+				t.Error("expected error")
 			}
 		})
 	})

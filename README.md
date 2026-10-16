@@ -140,6 +140,33 @@ agent-run jlaska/agent-sandbox opencode --inference anthropic
 an explicit error, because those tokens are not for use with third-party tools.
 `--inference` is accepted for the opencode harness only.
 
+#### How credentials reach the sandbox
+
+Secrets are never put on a command line. `agent-run` creates each OpenShell
+provider with the bare form `openshell provider create ... --credential KEY`,
+which makes OpenShell read the value from the environment of that one child
+process. In OpenShell 0.1.4 a provider only accepts the `env_vars` its profile
+declares as credential keys, and the sandbox sees an opaque placeholder under
+that same name:
+
+| Provider | Stored keys (sandbox env vars) | Host source |
+|---|---|---|
+| `github-agent` | `GITHUB_TOKEN`, `GH_TOKEN` | minted App token or PAT |
+| `claude-code` | `ANTHROPIC_API_KEY` | `ANTHROPIC_API_KEY`, else `CLAUDE_CODE_OAUTH_TOKEN`, else `ANTHROPIC_AUTH_TOKEN` |
+| `anthropic` (opencode) | `ANTHROPIC_API_KEY` | `ANTHROPIC_API_KEY` |
+| `litellm-inference` (pi, opencode) | `LITELLM_API_KEY` | `LITELLM_API_KEY` |
+
+`CLAUDE_CODE_OAUTH_TOKEN` and `ANTHROPIC_AUTH_TOKEN` are not declared by any
+profile, so they cannot be stored under their own names. When the OAuth token is
+the credential, it is stored as `ANTHROPIC_API_KEY` and the sandbox aliases the
+placeholder as `CLAUDE_CODE_OAUTH_TOKEN` (and hides `ANTHROPIC_API_KEY`). The
+`claude-code` profile injects it in the `x-api-key` header, so a Pro/Max OAuth
+token only works where that is accepted (for example a LiteLLM proxy). The
+optional `LITELLM_API_KEY_BEARER` / `LITELLM_BEARER_TOKEN` credentials of the
+`litellm-inference` profile are no longer filled with a dummy value; the
+`LITELLM_API_KEY` placeholder is resolved wherever the client puts it
+(`x-api-key` or `Authorization: Bearer`).
+
 ### GitHub authentication
 
 Two modes, auto-detected:
@@ -158,6 +185,17 @@ agent-run jlaska/agent-sandbox claude
 # PAT mode
 agent-run --github-token ghp_xxx jlaska/agent-sandbox claude
 ```
+
+### Interrupting a run
+
+Ctrl-C (SIGINT) and SIGTERM do not abandon the sandbox. `agent-run` stops at the
+next step, terminates any running child, and then performs its normal cleanup
+exactly once: it deletes the sandbox, revokes the installation token and deletes
+the providers. It exits with status 130 (`Error: interrupted by signal`). A
+second Ctrl-C during cleanup is ignored on purpose, because killing the cleanup
+would leave a sandbox with bootstrap egress and a live token. While the harness
+itself runs on a TTY, Ctrl-C goes to the harness inside the sandbox, not to
+`agent-run`.
 
 ### Passthrough args
 

@@ -115,7 +115,7 @@ DoD -> named checks (a check is reported as [target] name):
                                                mise-skip-log, mise-skip-no-install,
                                                mise-skip-narrowed          [plain-repo]
   DoD-5  egress narrowed                       narrow-log, narrow-no-bootstrap-rule,
-                                               narrow-pypi-denied, narrow-npm-denied [each harness]
+                                               narrow-pypi-denied, narrow-mise-download-denied [each harness]
   DoD-6  cache reuse + --fresh-cache           cache-mounted, cache-volume-labelled,
                                                cache-cold-first-run, cache-reuse-warm,
                                                cache-reuse-marker, cache-fresh-clears [cache]
@@ -537,19 +537,33 @@ probe_mise() { # target
     fi
 }
 
-# probe_denied TARGET CHECKNAME HOST: HTTPS to HOST must not succeed from the sandbox.
-probe_denied() {
-    local target="$1" name="$2" host="$3" out code
-    out="$(sbx sh -c "curl -sS -m 20 -o /dev/null -w 'http=%{http_code}' https://${host}/ 2>&1; echo \" rc=\$?\"" 2>&1)"
-    code="$(printf '%s' "$out" | sed -n 's/.*http=\([0-9]*\).*/\1/p' | head -n1)"
-    if [[ "$out" == *"not found"* ]]; then
-        fail "[$target] $name: probe could not run curl in the sandbox: $out"
-    elif [[ -z "$code" ]]; then
-        fail "[$target] $name: probe output not understood: $out"
-    elif [[ "$code" =~ ^[23] ]]; then
-        fail "[$target] $name: $host reachable after narrowing (HTTP $code)"
+# probe_mise_denied TARGET CHECKNAME MISE_TOOL_SPEC WHY
+#
+# Runs a fresh `mise install <spec>` in the sandbox, into scratch MISE_*_DIRs so
+# no cache can satisfy it, and expects it to FAIL. Why this probe and not curl:
+# the mise_bootstrap rule is bound to the mise binary only (its children --
+# uv, curl, tar -- match through parent-process ancestry), so a bare `curl
+# https://pypi.org` was denied before narrowing too and could never fail. A tool
+# download driven by mise is exactly the traffic mise_bootstrap allowed during
+# step 10 (probe_mise proves the same mechanism worked then), so a failure here
+# means the removal really took effect, and a success means bootstrap egress
+# survived narrowing. rc 124 (timeout) also counts as denied: the proxy drops
+# the connection rather than answering.
+probe_mise_denied() {
+    local target="$1" name="$2" spec="$3" why="$4" out rc
+    out="$(sbx bash -c "source ~/.profile 2>/dev/null; command -v mise >/dev/null || { echo 'mise-missing'; exit 127; }
+        d=\$(mktemp -d) && cd \"\$d\" &&
+        MISE_DATA_DIR=\"\$d/data\" MISE_CACHE_DIR=\"\$d/cache\" MISE_STATE_DIR=\"\$d/state\" MISE_CONFIG_DIR=\"\$d/config\" \\
+            timeout 120 mise install --yes '${spec}' 2>&1; echo \"rc=\$?\"" 2>&1)"
+    rc="$(printf '%s' "$out" | sed -n 's/^rc=\([0-9]*\)$/\1/p' | tail -n1)"
+    if [[ "$out" == *mise-missing* ]]; then
+        fail "[$target] $name: probe could not run mise in the sandbox"
+    elif [[ -z "$rc" ]]; then
+        fail "[$target] $name: probe output not understood: $(printf '%s' "$out" | tail -n3 | tr '\n' ' ')"
+    elif [[ "$rc" == 0 ]]; then
+        fail "[$target] $name: 'mise install $spec' SUCCEEDED after narrowing; bootstrap egress ($why) is still open"
     else
-        pass "[$target] $name ($host denied: HTTP $code)"
+        pass "[$target] $name ('mise install $spec' failed rc=$rc after narrowing; $why denied)"
     fi
 }
 
@@ -563,8 +577,11 @@ probe_narrowing() { # target
     else
         pass "[$target] narrow-no-bootstrap-rule"
     fi
-    probe_denied "$target" narrow-pypi-denied pypi.org
-    probe_denied "$target" narrow-npm-denied registry.npmjs.org
+    # pypi.org is reachable only through mise_bootstrap (uv under mise).
+    probe_mise_denied "$target" narrow-pypi-denied "pipx:cowsay@6.1" "pypi.org/files.pythonhosted.org"
+    # registry.npmjs.org is NOT probed: npm_registry deliberately allows node
+    # there permanently, so a denial would be wrong. dl.k8s.io is a bootstrap-only host.
+    probe_mise_denied "$target" narrow-mise-download-denied "kubectl@1.30.0" "dl.k8s.io/github releases"
 }
 
 # Wave-3 runtime risk: do inference credentials work through the proxy placeholder swap?

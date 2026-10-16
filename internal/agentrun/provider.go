@@ -110,23 +110,11 @@ func createInferenceProvidersFor(harness, inference string, explicitEnv []string
 	switch harness {
 	case HarnessClaude:
 		name := "claude-code"
-		apiKey := resolveCredential("ANTHROPIC_API_KEY", explicitEnv)
-		if apiKey == "" {
-			apiKey = resolveCredential("CLAUDE_CODE_OAUTH_TOKEN", explicitEnv)
-		}
-		if apiKey == "" {
-			apiKey = resolveCredential("ANTHROPIC_AUTH_TOKEN", explicitEnv)
-		}
-		if apiKey == "" {
-			apiKey = "none"
-		}
-
+		apiKey, _ := claudeCredential(explicitEnv)
 		_ = execCmdSilent("openshell", "provider", "delete", name)
-		if err := execCmd("openshell", "provider", "create",
-			"--name", name,
-			"--type", "claude-code",
-			"--credential", fmt.Sprintf("api_key=%s", apiKey),
-		); err != nil {
+		// The claude-code profile declares ANTHROPIC_API_KEY (and CLAUDE_API_KEY);
+		// 0.1.4 rejects any other stored key.
+		if err := createProvider(name, "claude-code", []credentialPair{{"ANTHROPIC_API_KEY", apiKey}}); err != nil {
 			return nil, nil, fmt.Errorf("failed to create claude-code provider: %w", err)
 		}
 		flags = append(flags, "--provider", name)
@@ -158,11 +146,8 @@ func createInferenceProvidersFor(harness, inference string, explicitEnv []string
 		}
 		name := "anthropic"
 		_ = execCmdSilent("openshell", "provider", "delete", name)
-		if err := execCmd("openshell", "provider", "create",
-			"--name", name,
-			"--type", "anthropic",
-			"--credential", fmt.Sprintf("api_key=%s", resolveCredential("ANTHROPIC_API_KEY", explicitEnv)),
-		); err != nil {
+		if err := createProvider(name, "anthropic",
+			[]credentialPair{{"ANTHROPIC_API_KEY", resolveCredential("ANTHROPIC_API_KEY", explicitEnv)}}); err != nil {
 			return nil, nil, fmt.Errorf("failed to create anthropic provider: %w", err)
 		}
 		flags = append(flags, "--provider", name)
@@ -172,17 +157,47 @@ func createInferenceProvidersFor(harness, inference string, explicitEnv []string
 	return flags, names, nil
 }
 
-// createLiteLLMProvider (re)creates the litellm-inference provider.
+// createLiteLLMProvider (re)creates the litellm-inference provider. Only
+// LITELLM_API_KEY is stored: the profile declares it as required, and the
+// proxy resolves its placeholder wherever the client puts it (x-api-key for
+// Claude Code, Authorization: Bearer for Pi/opencode), so the optional
+// LITELLM_API_KEY_BEARER / LITELLM_BEARER_TOKEN credentials are not needed.
 func createLiteLLMProvider(apiKey string) error {
 	name := "litellm-inference"
 	_ = execCmdSilent("openshell", "provider", "delete", name)
-	if err := execCmd("openshell", "provider", "create",
-		"--name", name,
-		"--type", "litellm-inference",
-		"--credential", fmt.Sprintf("litellm_api_key=%s", apiKey),
-		"--credential", "litellm_bearer_token=unused",
-	); err != nil {
+	if err := createProvider(name, "litellm-inference", []credentialPair{{"LITELLM_API_KEY", apiKey}}); err != nil {
 		return fmt.Errorf("failed to create litellm-inference provider: %w", err)
 	}
 	return nil
+}
+
+// credentialPair is one provider credential: Key is the env-var name the
+// profile declares (OpenShell 0.1.4 accepts only declared env_vars as stored
+// keys, and the sandbox sees a placeholder under that same name).
+type credentialPair struct{ Key, Value string }
+
+// createProvider runs `openshell provider create` with bare-key credentials
+// (`--credential KEY`): OpenShell reads each value from the child's environment
+// of the same name, so secrets never appear in argv (ps, shell history, logs).
+func createProvider(name, providerType string, creds []credentialPair) error {
+	args := []string{"provider", "create", "--name", name, "--type", providerType}
+	env := make([]string, 0, len(creds))
+	for _, c := range creds {
+		args = append(args, "--credential", c.Key)
+		env = append(env, c.Key+"="+c.Value)
+	}
+	return execCmdEnv(env, "openshell", args...)
+}
+
+// claudeCredential picks the secret for the claude-code provider and the host
+// variable it came from, in priority order. The profile only declares
+// ANTHROPIC_API_KEY, so every source is stored under that key; the OAuth token
+// is re-exposed under its own name inside the sandbox by claudeInitHook.
+func claudeCredential(explicitEnv []string) (value, source string) {
+	for _, k := range []string{"ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_AUTH_TOKEN"} {
+		if v := resolveCredential(k, explicitEnv); v != "" {
+			return v, k
+		}
+	}
+	return "none", ""
 }

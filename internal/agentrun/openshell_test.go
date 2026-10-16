@@ -183,6 +183,121 @@ func TestEnsureProfile(t *testing.T) {
 	})
 }
 
+// A gateway that already has the stock upstream profile (anthropic: curl only)
+// must get our binaries via `provider profile update`, with the exported
+// resource_version (0.1.4 rejects an update without one); equal binaries are a
+// no-op.
+func TestEnsureProfileReconcilesBinaries(t *testing.T) {
+	listAndExport := func(exportJSON string, exportErr error) func(string, ...string) (string, error) {
+		return func(_ string, args ...string) (string, error) {
+			joined := strings.Join(args, " ")
+			switch {
+			case strings.Contains(joined, "list-profiles"):
+				return `[{"id":"anthropic"}]`, nil
+			case strings.Contains(joined, "profile export anthropic -o json"):
+				return exportJSON, exportErr
+			}
+			t.Errorf("unexpected output call: %s", joined)
+			return "", nil
+		}
+	}
+	updates := func(m *mockCmd) []string {
+		var out []string
+		for _, c := range callStrings(m) {
+			if strings.Contains(c, "provider profile update") {
+				out = append(out, c)
+			}
+		}
+		return out
+	}
+
+	t.Run("stale binaries are updated", func(t *testing.T) {
+		withMockExec(t, func(m *mockCmd) {
+			m.execOutput = listAndExport(`{"id":"anthropic","resource_version":7,"binaries":["/usr/bin/curl","/usr/local/bin/curl"]}`, nil)
+			var staged string
+			execCmdFn = func(name string, args ...string) error {
+				m.calls = append(m.calls, append([]string{name}, args...))
+				if len(args) >= 5 && args[2] == "update" {
+					b, err := os.ReadFile(args[len(args)-1])
+					if err != nil {
+						t.Fatal(err)
+					}
+					staged = string(b)
+				}
+				return nil
+			}
+			captureStdout(t, func() {
+				if err := ensureProfile("anthropic"); err != nil {
+					t.Fatal(err)
+				}
+			})
+			got := updates(m)
+			if len(got) != 1 || !strings.HasPrefix(got[0], "openshell provider profile update anthropic --file ") {
+				t.Fatalf("update calls = %v", got)
+			}
+			for _, want := range []string{"resource_version: 7", "/usr/local/bin/opencode", "api.anthropic.com"} {
+				if !strings.Contains(staged, want) {
+					t.Errorf("staged profile missing %q:\n%s", want, staged)
+				}
+			}
+			if strings.Contains(strings.Join(callStrings(m), "\n"), "profile import") {
+				t.Error("an installed profile must be updated, not imported")
+			}
+		})
+	})
+
+	t.Run("equal binaries are a no-op (order-insensitive)", func(t *testing.T) {
+		withMockExec(t, func(m *mockCmd) {
+			m.execOutput = listAndExport(`{"id":"anthropic","resource_version":7,"binaries":["/usr/local/bin/opencode","/usr/bin/curl"]}`, nil)
+			if err := ensureProfile("anthropic"); err != nil {
+				t.Fatal(err)
+			}
+			if got := updates(m); len(got) != 0 {
+				t.Errorf("unexpected updates: %v", got)
+			}
+		})
+	})
+
+	t.Run("export failure leaves the profile alone", func(t *testing.T) {
+		withMockExec(t, func(m *mockCmd) {
+			m.execOutput = listAndExport("", errors.New("denied"))
+			out := captureStdout(t, func() {
+				if err := ensureProfile("anthropic"); err != nil {
+					t.Fatal(err)
+				}
+			})
+			if len(updates(m)) != 0 || !strings.Contains(out, "WARN") {
+				t.Errorf("updates=%v out=%q", updates(m), out)
+			}
+		})
+	})
+
+	t.Run("update failure warns and continues", func(t *testing.T) {
+		withMockExec(t, func(m *mockCmd) {
+			m.execOutput = listAndExport(`{"resource_version":2,"binaries":["/usr/bin/curl"]}`, nil)
+			m.err = errors.New("profile attached to a sandbox")
+			out := captureStdout(t, func() {
+				if err := ensureProfile("anthropic"); err != nil {
+					t.Fatalf("a failed update must not abort the run: %v", err)
+				}
+			})
+			if !strings.Contains(out, "WARN: could not update provider profile anthropic") {
+				t.Errorf("out = %q", out)
+			}
+		})
+	})
+
+	t.Run("missing resource_version is not updated blindly", func(t *testing.T) {
+		withMockExec(t, func(m *mockCmd) {
+			m.execOutput = listAndExport(`{"binaries":["/usr/bin/curl"]}`, nil)
+			captureStdout(t, func() { _ = ensureProfile("anthropic") })
+			if len(updates(m)) != 0 {
+				t.Errorf("updates = %v", updates(m))
+			}
+		})
+	})
+}
+
 func TestEnsureProfiles(t *testing.T) {
 	withMockExec(t, func(mock *mockCmd) {
 		mock.execOutput = func(string, ...string) (string, error) { return "[]", nil }

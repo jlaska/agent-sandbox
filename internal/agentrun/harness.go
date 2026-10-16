@@ -103,13 +103,14 @@ func (h *Harness) Preseed() func(sandboxName string) error {
 // per-harness cases in provider.go (credentials/providers) and Validate.
 var harnesses = map[string]*Harness{
 	HarnessClaude: {
-		Name:      HarnessClaude,
-		Command:   "claude",
-		ModelFlag: "--model",
-		ImageKey:  "claude",
-		profiles:  []string{"claude-code"},
-		initHook:  claudeInitHook,
-		preseed:   claudePreseed,
+		Name:        HarnessClaude,
+		Command:     "claude",
+		ModelFlag:   "--model",
+		ImageKey:    "claude",
+		profiles:    []string{"claude-code"},
+		initHook:    func(sb string) error { return claudeInitHook(sb, HarnessOptions{}) },
+		initHookFor: claudeInitHook,
+		preseed:     claudePreseed,
 	},
 	HarnessPi: {
 		Name:      HarnessPi,
@@ -117,7 +118,6 @@ var harnesses = map[string]*Harness{
 		ModelFlag: "--model",
 		ImageKey:  "pi",
 		profiles:  []string{"litellm-inference"},
-		initHook:  piInitHook,
 	},
 	// opencode 1.19.3: both the default TUI command (`opencode --help`, pinned
 	// image) and `opencode run` (packages/opencode/src/cli/cmd/run.ts,
@@ -193,20 +193,13 @@ func opencodeProfiles(o HarnessOptions) ([]string, error) {
 	return []string{"anthropic"}, nil
 }
 
-// opencodeInitHook maps the provider-injected credential to the env var
-// opencode reads: ANTHROPIC_API_KEY for its built-in anthropic provider,
-// LITELLM_API_KEY referenced from the preseeded config via {env:...}.
-func opencodeInitHook(sandboxName string, o HarnessOptions) error {
-	backend, err := resolveOpencodeBackend(o.Inference, o.ExplicitEnv)
-	if err != nil {
-		return err
-	}
-	if backend == inferenceLiteLLM {
-		return piInitHook(sandboxName)
-	}
-	return execCmd("openshell", "sandbox", "exec", "-n", sandboxName, "--", "sh", "-c",
-		`echo 'export ANTHROPIC_API_KEY="$api_key"' >> ~/.bashrc
-			 echo 'export ANTHROPIC_API_KEY="$api_key"' >> ~/.profile`)
+// opencodeInitHook needs no sandbox-side work: the providers store their
+// credentials under the env-var names the opencode config reads
+// (ANTHROPIC_API_KEY, LITELLM_API_KEY), so the sandbox already carries those
+// placeholders. It still validates the backend choice.
+func opencodeInitHook(_ string, o HarnessOptions) error {
+	_, err := resolveOpencodeBackend(o.Inference, o.ExplicitEnv)
+	return err
 }
 
 // opencodeConfigPath is the global config the image already seeds with
@@ -298,25 +291,17 @@ func HarnessNames() []string {
 	return names
 }
 
-// claudeInitHook maps the claude-code provider credential to the env vars
-// Claude Code expects.
-func claudeInitHook(sandboxName string) error {
-	oauthToken := resolveCredential("CLAUDE_CODE_OAUTH_TOKEN", nil)
-	if oauthToken != "" {
-		return execCmd("openshell", "sandbox", "exec", "-n", sandboxName, "--", "sh", "-c",
-			`echo 'export CLAUDE_CODE_OAUTH_TOKEN="$api_key"' >> ~/.bashrc
-				 echo 'export CLAUDE_CODE_OAUTH_TOKEN="$api_key"' >> ~/.profile`)
+// claudeInitHook aliases the sandbox's ANTHROPIC_API_KEY placeholder (the only
+// key the claude-code profile accepts) as CLAUDE_CODE_OAUTH_TOKEN when that was
+// the host credential, and hides the API-key name so Claude Code does not
+// prefer it. The alias copies the placeholder; it never overwrites one. With a
+// real API key (or ANTHROPIC_AUTH_TOKEN) no sandbox-side work is needed.
+func claudeInitHook(sandboxName string, o HarnessOptions) error {
+	if _, source := claudeCredential(o.ExplicitEnv); source != "CLAUDE_CODE_OAUTH_TOKEN" {
+		return nil
 	}
 	return execCmd("openshell", "sandbox", "exec", "-n", sandboxName, "--", "sh", "-c",
-		`echo 'export ANTHROPIC_API_KEY="$api_key"' >> ~/.bashrc
-			 echo 'export ANTHROPIC_API_KEY="$api_key"' >> ~/.profile`)
-}
-
-// piInitHook maps the litellm-inference provider credential for Pi.
-func piInitHook(sandboxName string) error {
-	return execCmd("openshell", "sandbox", "exec", "-n", sandboxName, "--", "sh", "-c",
-		`echo 'export LITELLM_API_KEY="$litellm_api_key"' >> ~/.bashrc
-			 echo 'export LITELLM_API_KEY="$litellm_api_key"' >> ~/.profile`)
+		`echo 'export CLAUDE_CODE_OAUTH_TOKEN="$ANTHROPIC_API_KEY"; unset ANTHROPIC_API_KEY' | tee -a ~/.bashrc >> ~/.profile`)
 }
 
 // claudePreseed writes ~/.claude.json. Claude Code checks it for

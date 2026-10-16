@@ -105,10 +105,8 @@ doc = yaml.safe_load(open(policy))
 bad = set()
 for key, net in (doc.get("network_policies") or {}).items():
     paths = [b["path"] for b in net.get("binaries", [])]
-    names = {os.path.basename(p) for p in paths}
-    # Skip networks reserved for other harnesses and binaries named for other harnesses.
-    if names & others and harness not in names:
-        continue
+    # Check every rule; skip only binaries named for another harness (claude/pi/opencode).
+    # Shared paths (e.g. pi reaching litellm via node) must be in the list for this harness.
     for p in paths:
         if os.path.basename(p) in others:
             continue

@@ -67,6 +67,38 @@ which is why the two `policy get` checks exist. In 0.1.4 `--full` reports only
 Narrowing always runs, including with `--no-mise` or when the repo has no mise
 config, because the rule is added at create time before the repo is cloned.
 
+### Interrupts and failed cleanup
+
+SIGINT/SIGTERM cancel the run context: the current child gets SIGTERM, no
+further step starts (in particular the harness is not launched after narrowing
+if the signal arrived earlier), and the single deferred cleanup runs afterwards.
+Because the cleanup commands run after the signal, they are not cancelled
+themselves. If `sandbox delete` fails in the fail-closed narrowing path, the
+sandbox and token stay registered for the deferred cleanup, which retries.
+
+### Provider credential keys
+
+OpenShell 0.1.4 stores a provider credential only under a key that its profile
+declares in `env_vars` (`CredentialProfile::accepted_stored_keys`; the server
+rejects others with "provider credentials are not declared by profile"), and the
+sandbox receives a placeholder under that same name. `agent-run` therefore
+stores `GITHUB_TOKEN`/`GH_TOKEN`, `ANTHROPIC_API_KEY` and `LITELLM_API_KEY`, and
+passes the values through the child's environment with `--credential KEY` so
+they never appear in argv. Init hooks never assign from a stored key (an
+`export X="$api_key"` would expand empty); they only alias a placeholder-bearing
+variable when a harness wants another name (claude with an OAuth token).
+
+### Provider profile updates
+
+If the gateway already has a profile with an id `agent-run` uses (for example
+the stock upstream `anthropic` profile, which allows only curl), `agent-run`
+exports it (`openshell provider profile export <id> -o json`), and when its
+`binaries` differ from the embedded ones it runs
+`openshell provider profile update <id> --file ...` with the exported
+`resource_version` (required by 0.1.4). If the update is refused (for example a
+sandbox is attached to the profile) it warns and continues. Only `binaries` are
+compared.
+
 ## Threat notes
 
 - **Narrowing fails closed.** Any failure of the removal or either check deletes
@@ -187,11 +219,11 @@ are refreshed. That failure is intentional.
 | `provider create` fails with an unknown type | A provider profile is not imported. `agent-run` imports them itself; if you created providers by hand, run `openshell provider list-profiles` and import the missing one. |
 | Egress denied for a binary that is allowed in the policy | OpenShell matches the **real path** of the binary. A symlink (`/usr/bin/python3`) or a script run through an interpreter (`npm`, `pi` are node scripts) does not match. Bind the rule to the real path (`/usr/bin/python3.12`, `/usr/local/bin/node`) and list it in `binaries.txt`. `make smoke` reports violations. |
 | A binary is denied after it was replaced | Binaries are hash-pinned on first use. Rebuild the image rather than replacing binaries in a running sandbox. |
-| `egress narrowing failed (sandbox deleted, agent not launched)` | Fail-closed by design. The message says whether the removal failed, the rule was still present, or the revision was not `loaded` (a `load_error` is included when OpenShell gives one). Check `openshell policy list <sandbox>` before retrying; a rejected revision blocks all egress under `fail_closed`. |
+| `egress narrowing failed (sandbox deleted, agent not launched)` | Fail-closed by design. The message says whether the removal failed, the rule was still present, or the revision was not `loaded` (a `load_error` is included when OpenShell gives one). The sandbox is deleted as part of failing closed, so `agent-run` prints `openshell policy list <sandbox>` (revision statuses and load errors) *before* deleting it; read that output, not the gateway afterwards. If the delete itself failed the message says `SANDBOX DELETE FAILED`, and the deferred cleanup retries it; if it still fails, run `openshell sandbox delete <sandbox>`. |
 | `WARN: the gateway refused the mise cache mount` | The gateway disallows driver config. Add `allow_driver_config = true` under `[openshell.drivers.<driver>]` and recreate the gateway. The run continues without a cache. |
 | `volume ... exists without labels ...` | The cache volume was created without the labels OpenShell requires (`openshell.ai/sandbox-attachable=true` and `openshell.ai/sandbox-attachable-workspace=<workspace>`). Labels cannot be changed in place: `podman volume rm mise-cache-<owner>-<repo>` and rerun. |
 | Kubernetes sandbox stays Pending | The `mise-cache-<owner>-<repo>` PVC is missing. Create it with the manifest `agent-run` prints, or use `--no-cache`. |
-| `mise install failed: ... --mise-allow-host` | A tool needs a host outside the bootstrap list. Look in the sandbox logs for the denied host and rerun with `--mise-allow-host host[:port]`. Unauthenticated `api.github.com` is limited to 60 requests/hour, which can also fail installs of many GitHub-hosted tools. |
+| `mise install failed: ... --mise-allow-host` | A tool needs a host outside the bootstrap list. `agent-run` prints the denial lines from `openshell logs <sandbox> --source sandbox` before the sandbox is deleted (the sandbox is gone by the time you read the error); use the denied host and rerun with `--mise-allow-host host[:port]`. Unauthenticated `api.github.com` is limited to 60 requests/hour, which can also fail installs of many GitHub-hosted tools. |
 | `--fresh-cache and --no-cache are mutually exclusive` | `--no-cache` mounts nothing, so there is nothing to clear. Use one or the other. |
 | `--inference applies to the opencode harness only` | `--inference` is only for opencode. |
 | opencode: `CLAUDE_CODE_OAUTH_TOKEN ... is not usable with third-party tools` | opencode needs `ANTHROPIC_API_KEY` or `LITELLM_API_KEY`. |

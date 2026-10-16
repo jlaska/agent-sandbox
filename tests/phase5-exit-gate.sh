@@ -10,7 +10,7 @@
 # Sandboxes are created from the per-harness image (`openshell sandbox create
 # --from <ref>`). The ref defaults to the one pinned in openshell/images.yaml;
 # while that digest is all zeros (unpublished) pass --image, e.g.
-# `--image agent-claude:local` after `make images`. Nothing is installed inside
+# `--image localhost/agent-claude:local` after `make images`. Nothing is installed inside
 # the sandbox.
 #
 # Prerequisites:
@@ -26,7 +26,6 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 AGENT_RUN="${REPO_ROOT}/bin/agent-run"
 LITELLM_PROFILE="${REPO_ROOT}/openshell/litellm-inference-profile.yaml"
 GITHUB_PROFILE="${REPO_ROOT}/openshell/github-agent-profile.yaml"
-CLAUDE_PROFILE="${REPO_ROOT}/openshell/providers/claude-code.yaml"
 IMAGES_YAML="${REPO_ROOT}/openshell/images.yaml"
 
 usage() {
@@ -98,7 +97,7 @@ pinned_image() {
 if [[ -z "$IMAGE" ]]; then
     IMAGE="$(pinned_image "$AGENT")"
     if [[ -z "$IMAGE" || "$IMAGE" =~ @sha256:0{64}$ ]]; then
-        echo "FATAL: image for $AGENT is not published yet; build it (make images) and pass --image agent-$AGENT:local" >&2
+        echo "FATAL: image for $AGENT is not published yet; build it (make images) and pass --image localhost/agent-$AGENT:local" >&2
         exit 1
     fi
 fi
@@ -145,32 +144,32 @@ POLICY_FILE=$("$AGENT_RUN" --generate-policy "$REPO" 2>/dev/null) || { echo "FAT
 
 ensure_profile github-agent "$GITHUB_PROFILE"
 openshell provider delete github-agent 2>/dev/null || true
-openshell provider create --name github-agent --type github-agent \
-    --credential "api_token=${MINTED_TOKEN}" >/dev/null 2>&1
+# OpenShell 0.1.4 accepts only the profile's declared env_vars as stored keys;
+# bare `--credential KEY` reads the value from the environment, so the token
+# never appears in argv. The sandbox receives placeholders under these names.
+GITHUB_TOKEN="$MINTED_TOKEN" GH_TOKEN="$MINTED_TOKEN" \
+    openshell provider create --name github-agent --type github-agent \
+    --credential GITHUB_TOKEN --credential GH_TOKEN >/dev/null 2>&1
 
 PROVIDER_FLAGS=(--provider github-agent)
 ENV_FLAGS=()
 
 if [[ "$SKIP_INFERENCE" != "--skip-inference" ]]; then
     API_KEY=$(keychain_get "litellm-api-key") || { echo "FATAL: no litellm-api-key"; exit 1; }
-    BEARER=$(keychain_get "litellm-bearer-token") || BEARER="unused"
     BASE_URL=$(keychain_get "anthropic-base-url") || { echo "FATAL: no anthropic-base-url"; exit 1; }
 
     ensure_profile litellm-inference "$LITELLM_PROFILE"
     openshell provider delete litellm-inference 2>/dev/null || true
-    openshell provider create --name litellm-inference --type litellm-inference \
-        --credential "litellm_api_key=${API_KEY}" \
-        --credential "litellm_bearer_token=${BEARER}" >/dev/null 2>&1
+    LITELLM_API_KEY="$API_KEY" \
+        openshell provider create --name litellm-inference --type litellm-inference \
+        --credential LITELLM_API_KEY >/dev/null 2>&1
     PROVIDER_FLAGS+=(--provider litellm-inference)
 
     case "$AGENT" in
         claude)
-            ensure_profile claude-code "$CLAUDE_PROFILE"
-            openshell provider delete claude-code 2>/dev/null || true
-            openshell provider create --name claude-code --type claude-code \
-                --credential "api_key=${API_KEY}" >/dev/null 2>&1
-            PROVIDER_FLAGS+=(--provider claude-code)
-            ENV_FLAGS=(--env ANTHROPIC_API_KEY=__LITELLM_PLACEHOLDER__ --env "ANTHROPIC_BASE_URL=${BASE_URL}")
+            # Claude talks to LiteLLM, whose credential is the LITELLM_API_KEY
+            # placeholder; the claude-code provider (api.anthropic.com) is not needed.
+            ENV_FLAGS=(--env "ANTHROPIC_BASE_URL=${BASE_URL}")
             ;;
         pi|opencode)
             ENV_FLAGS=(--env "LITELLM_BASE_URL=${BASE_URL}")
@@ -206,12 +205,13 @@ openshell policy update "$SANDBOX_NAME" --remove-rule mise_bootstrap --wait >/de
 # --- Step 3: Credential mapping (everything else is baked into the image) ---
 case "$AGENT" in
     claude)
-        # shellcheck disable=SC2016  # $litellm_api_key must expand inside the sandbox
-        sb sh -c 'echo "export ANTHROPIC_API_KEY=\"\$litellm_api_key\"" >> ~/.profile' 2>/dev/null
+        # Alias from the placeholder-bearing LITELLM_API_KEY; never overwrite a
+        # placeholder with a value from a key that no longer exists.
+        # shellcheck disable=SC2016  # $LITELLM_API_KEY must expand inside the sandbox
+        sb sh -c 'echo "export ANTHROPIC_API_KEY=\"\$LITELLM_API_KEY\"" >> ~/.profile' 2>/dev/null
         ;;
     pi|opencode)
-        # shellcheck disable=SC2016  # $litellm_api_key must expand inside the sandbox
-        sb sh -c 'echo "export LITELLM_API_KEY=\"\$litellm_api_key\"" >> ~/.profile' 2>/dev/null
+        : # LITELLM_API_KEY already carries the placeholder
         ;;
 esac
 
@@ -224,7 +224,7 @@ sb sh -c "
     git config user.email 'jlaska-agent[bot]@users.noreply.github.com'
     git config commit.gpgsign false
     git config tag.gpgsign false
-    git config credential.helper '!f() { echo \"username=x-access-token\"; echo \"password=\${api_token}\"; }; f'
+    git config credential.helper '!f() { echo \"username=x-access-token\"; echo \"password=\${GH_TOKEN:-\$GITHUB_TOKEN}\"; }; f'
 " 2>/dev/null
 
 # --- Step 5: Acceptance tests ---
@@ -256,46 +256,40 @@ echo "  Creating branch $BRANCH..."
 sbr sh -c "git checkout -b $BRANCH && echo 'test' > phase5-gate.txt && git add phase5-gate.txt && git commit -m 'Phase 5 gate test'" >/dev/null 2>&1
 test_expect_pass "Push agent branch" sbr git push origin "$BRANCH"
 
-sbr sh -c "export GH_TOKEN=\$api_token; gh pr create --title 'Phase 5 gate: $AGENT' --body 'Automated' --head $BRANCH --base main" >/dev/null 2>&1
-test_expect_pass "Create PR" sbr sh -c "export GH_TOKEN=\$api_token; gh pr list --head $BRANCH --json number -q '.[0].number' | grep -q '[0-9]'"
+sbr sh -c "gh pr create --title 'Phase 5 gate: $AGENT' --body 'Automated' --head $BRANCH --base main" >/dev/null 2>&1
+test_expect_pass "Create PR" sbr sh -c "gh pr list --head $BRANCH --json number -q '.[0].number' | grep -q '[0-9]'"
 
-PR_NUM=$(sbr sh -c "export GH_TOKEN=\$api_token; gh pr list --head $BRANCH --json number -q '.[0].number'" 2>/dev/null)
-test_expect_pass "Comment on PR" sbr sh -c "export GH_TOKEN=\$api_token; gh pr comment $PR_NUM --body 'gate test'"
-test_expect_pass "Submit review" sbr sh -c "export GH_TOKEN=\$api_token; gh pr review $PR_NUM --comment --body 'gate review'"
-test_expect_pass "Inspect checks" sbr sh -c "export GH_TOKEN=\$api_token; gh pr checks $PR_NUM 2>&1; true"
+PR_NUM=$(sbr sh -c "gh pr list --head $BRANCH --json number -q '.[0].number'" 2>/dev/null)
+test_expect_pass "Comment on PR" sbr sh -c "gh pr comment $PR_NUM --body 'gate test'"
+test_expect_pass "Submit review" sbr sh -c "gh pr review $PR_NUM --comment --body 'gate review'"
+test_expect_pass "Inspect checks" sbr sh -c "gh pr checks $PR_NUM 2>&1; true"
 test_expect_pass "Commit without YubiKey" true  # commit already succeeded above
 
 # Denied operations
 test_expect_fail "Push main" sbr sh -c "git checkout main 2>/dev/null; echo x > fail.txt; git add fail.txt; git commit -m fail; git push origin main"
 test_expect_fail "Push unauthorized branch" sbr sh -c "git checkout -b feature/gate 2>/dev/null; git push origin feature/gate"
 test_expect_fail "Create tag" sbr sh -c "git tag v0.0.99-gate; git push origin v0.0.99-gate"
-test_expect_fail "gh pr merge" sbr sh -c "export GH_TOKEN=\$api_token; gh pr merge $PR_NUM --merge"
-test_expect_fail "REST merge API" sbr sh -c "export GH_TOKEN=\$api_token; gh api -X PUT repos/$REPO/pulls/$PR_NUM/merge -f merge_method=merge"
+test_expect_fail "gh pr merge" sbr sh -c "gh pr merge $PR_NUM --merge"
+test_expect_fail "REST merge API" sbr sh -c "gh api -X PUT repos/$REPO/pulls/$PR_NUM/merge -f merge_method=merge"
 # jlaska/agent-sandbox-denied: permanent canary (never on the App)
 test_expect_fail "Access unapproved repo (canary)" sbr git clone https://github.com/jlaska/agent-sandbox-denied.git /tmp/denied
 
 # Credential containment
-# shellcheck disable=SC2016  # $api_token must expand inside the sandbox
-CRED_CHECK=$(sbr sh -c 'echo "$api_token" | head -c 4' 2>/dev/null)
-if [[ "$CRED_CHECK" != "ghs_" ]]; then
-    pass "Credential is placeholder (not real token)"
-else
-    fail "Credential appears to be a real GitHub token"
-fi
-
-# shellcheck disable=SC2016  # ${#GITHUB_TOKEN} must expand inside the sandbox
-GITHUB_TOKEN_LEN=$(sbr sh -c 'echo ${#GITHUB_TOKEN}' 2>/dev/null)
-if [[ "$GITHUB_TOKEN_LEN" == "0" ]]; then
-    pass "No GITHUB_TOKEN exposed"
-else
-    fail "GITHUB_TOKEN exposed ($GITHUB_TOKEN_LEN chars)"
-fi
+# Both declared env_vars (GH_TOKEN, GITHUB_TOKEN) must be opaque placeholders.
+for var in GH_TOKEN GITHUB_TOKEN; do
+    CRED_CHECK=$(sbr sh -c "printenv $var" 2>/dev/null)
+    if [[ "$CRED_CHECK" == openshell:resolve:* ]]; then
+        pass "$var is a placeholder (not the real token)"
+    else
+        fail "$var is not a placeholder (got ${#CRED_CHECK} chars, prefix '${CRED_CHECK:0:4}')"
+    fi
+done
 
 # Inference test
 if [[ "$SKIP_INFERENCE" != "--skip-inference" ]]; then
     echo ""
     echo "  Inference test (LiteLLM connectivity)..."
-    INFERENCE_RESULT=$(sbr sh -c "source ~/.profile 2>/dev/null; curl -s -o /dev/null -w '%{http_code}' \"\${ANTHROPIC_BASE_URL:-\$LITELLM_BASE_URL}/v1/models\" -H 'x-api-key: '\"\$litellm_api_key\"" 2>/dev/null || echo "000")
+    INFERENCE_RESULT=$(sbr sh -c "source ~/.profile 2>/dev/null; curl -s -o /dev/null -w '%{http_code}' \"\${ANTHROPIC_BASE_URL:-\$LITELLM_BASE_URL}/v1/models\" -H 'x-api-key: '\"\$LITELLM_API_KEY\"" 2>/dev/null || echo "000")
     if [[ "$INFERENCE_RESULT" == "200" || "$INFERENCE_RESULT" == "401" || "$INFERENCE_RESULT" == "403" ]]; then
         pass "Model auth reaches LiteLLM (HTTP $INFERENCE_RESULT)"
     else

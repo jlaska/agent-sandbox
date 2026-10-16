@@ -402,21 +402,12 @@ func TestRealPolicyBinariesSubsetOfBinariesTxt(t *testing.T) {
 			}
 		}
 	}
+	// Every rule is checked for every harness. Only binaries *named* for a
+	// different harness (claude/pi/opencode) are skipped; shared paths such as
+	// the node and curl in the litellm rule (which is how pi reaches LiteLLM,
+	// as a node script) must be in each harness's own binaries.txt.
 	for _, h := range harnessNames {
 		for key, r := range p.NetworkPolicies {
-			names := map[string]bool{}
-			for _, b := range r.Binaries {
-				names[filepath.Base(b.Path)] = true
-			}
-			reserved := false
-			for _, o := range harnessNames {
-				if o != h && names[o] && !names[h] {
-					reserved = true
-				}
-			}
-			if reserved {
-				continue
-			}
 			for _, b := range r.Binaries {
 				base := filepath.Base(b.Path)
 				if base != h && slices.Contains(harnessNames, base) {
@@ -452,6 +443,9 @@ func narrowMock(t *testing.T, effective, rev string, updateErr error) func(*mock
 				return readTestdata(t, effective), nil
 			case strings.Contains(joined, "policy get") && strings.Contains(joined, "--rev 3"):
 				return readTestdata(t, rev), nil
+			}
+			if strings.HasPrefix(joined, "policy list") {
+				return "REV STATUS\n3 loaded\n", nil
 			}
 			t.Errorf("unexpected output call: %s", joined)
 			return "", nil
@@ -515,6 +509,21 @@ func TestVerifyNarrowedRejections(t *testing.T) {
 			})
 		})
 	}
+	// An empty/truncated rule set must not pass the "mise_bootstrap is gone" check vacuously.
+	for _, tt := range []struct{ name, body, wantErr string }{
+		{"missing network_policies", `{"version":3,"status":"effective","policy":{"version":1}}`, "no network_policies"},
+		{"empty network_policies", `{"version":3,"status":"effective","policy":{"network_policies":{}}}`, "no network_policies"},
+		{"always-present rule missing", `{"version":3,"status":"effective","policy":{"network_policies":{"other":{"name":"o"}}}}`, "github_git"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			withMockExec(t, func(m *mockCmd) {
+				m.execOutput = func(string, ...string) (string, error) { return tt.body, nil }
+				if _, err := verifyNarrowed("sb1"); err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Errorf("err = %v, want containing %q", err, tt.wantErr)
+				}
+			})
+		})
+	}
 	t.Run("garbage output", func(t *testing.T) {
 		withMockExec(t, func(m *mockCmd) {
 			m.execOutput = func(string, ...string) (string, error) { return "not json", nil }
@@ -563,7 +572,7 @@ func TestEnforceNarrowingFailsClosed(t *testing.T) {
 			withMockExec(t, func(m *mockCmd) {
 				narrowMock(t, "policy-get-effective-clean.json", tt.rev, tt.updateErr)(m)
 				var err error
-				captureStdout(t, func() { err = enforceNarrowing(&Config{}, "sb1", tt.cred) })
+				captureStdout(t, func() { _, err = enforceNarrowing(&Config{}, "sb1", tt.cred) })
 				if err == nil || !strings.Contains(err.Error(), "agent not launched") {
 					t.Fatalf("expected fail-closed error, got %v", err)
 				}
@@ -582,7 +591,7 @@ func TestEnforceNarrowingFailsClosed(t *testing.T) {
 		withMockExec(t, func(m *mockCmd) {
 			narrowMock(t, "policy-get-effective-clean.json", "policy-rev-loaded.json", nil)(m)
 			captureStdout(t, func() {
-				if err := enforceNarrowing(&Config{}, "sb1", app); err != nil {
+				if _, err := enforceNarrowing(&Config{}, "sb1", app); err != nil {
 					t.Fatal(err)
 				}
 			})

@@ -383,7 +383,8 @@ func TestCacheStateAndDetectionError(t *testing.T) {
 }
 
 // Narrowing must run even when mise is skipped: the mise phase itself never
-// touches policy, and enforceNarrowing is unconditional in Run.
+// touches policy. The Run-level proof (narrowing before launch under
+// --no-mise) is TestRunNoMiseStillNarrowsBeforeLaunch; this checks the pieces.
 func TestNarrowingIndependentOfMise(t *testing.T) {
 	withMockExec(t, func(m *mockCmd) {
 		narrowMock(t, "policy-get-effective-clean.json", "policy-rev-loaded.json", nil)(m)
@@ -391,12 +392,39 @@ func TestNarrowingIndependentOfMise(t *testing.T) {
 			if err := runMisePhase(&Config{NoMise: true}, "sb1", noCache("docker")); err != nil {
 				t.Fatal(err)
 			}
-			if err := enforceNarrowing(&Config{NoMise: true}, "sb1", nil); err != nil {
+			if _, err := enforceNarrowing(&Config{NoMise: true}, "sb1", nil); err != nil {
 				t.Fatal(err)
 			}
 		})
 		if got := callStrings(m); len(got) == 0 || got[0] != "openshell policy update sb1 --remove-rule mise_bootstrap --wait" {
 			t.Errorf("narrowing did not run with --no-mise: %v", got)
+		}
+	})
+}
+
+// The sandbox is deleted right after a failed install, so denied hosts must be
+// printed before the error is returned.
+func TestMiseInstallFailurePrintsDeniedEgress(t *testing.T) {
+	withMockExec(t, func(m *mockCmd) {
+		probeMock("mise.toml\n", "0", "")(m)
+		orig := m.execOutput
+		m.execOutput = func(n string, a ...string) (string, error) {
+			if len(a) > 0 && a[0] == "logs" {
+				return "INFO ok\nWARN CONNECT denied host=evil.example.com:443 binary=/usr/bin/mise\n", nil
+			}
+			return orig(n, a...)
+		}
+		execCmdFn = func(name string, args ...string) error {
+			m.calls = append(m.calls, append([]string{name}, args...))
+			return errors.New("exit 1")
+		}
+		var err error
+		out := captureStdout(t, func() { err = runMisePhase(&Config{}, "sb", noCache("docker")) })
+		if err == nil || !strings.Contains(out, "evil.example.com:443") {
+			t.Errorf("err=%v out=%s", err, out)
+		}
+		if strings.Contains(err.Error(), "appear in the sandbox logs") {
+			t.Errorf("error still points at logs of a deleted sandbox: %v", err)
 		}
 	})
 }

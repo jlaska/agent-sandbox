@@ -4,6 +4,7 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -80,7 +81,7 @@ func TestOpencodeHarnessLaunch(t *testing.T) {
 		t.Errorf("unexpected harness: %+v", h)
 	}
 	got := buildLaunchCmd(h, &Config{Model: "anthropic/claude-sonnet-4-5", PassthroughArgs: []string{"--agent", "build"}})
-	want := "source ~/.profile 2>/dev/null; export GH_TOKEN=$api_token; exec opencode --model 'anthropic/claude-sonnet-4-5' '--agent' 'build'"
+	want := "source ~/.profile 2>/dev/null; exec opencode --model 'anthropic/claude-sonnet-4-5' '--agent' 'build'"
 	if got != want {
 		t.Errorf("launch cmd\n got: %s\nwant: %s", got, want)
 	}
@@ -109,23 +110,19 @@ func TestOpencodeProvidersFor(t *testing.T) {
 }
 
 func TestOpencodeInitHook(t *testing.T) {
-	tests := []struct {
-		inference, wantVar string
-	}{
-		{"litellm", `LITELLM_API_KEY="$litellm_api_key"`},
-		{"anthropic", `ANTHROPIC_API_KEY="$api_key"`},
-	}
-	for _, tt := range tests {
-		t.Run(tt.inference, func(t *testing.T) {
+	// The providers store ANTHROPIC_API_KEY / LITELLM_API_KEY directly, so the
+	// hook only validates the backend; it must not touch the sandbox.
+	for _, inference := range []string{"litellm", "anthropic"} {
+		t.Run(inference, func(t *testing.T) {
 			clearOpencodeEnv(t)
 			t.Setenv("LITELLM_API_KEY", "l")
 			t.Setenv("ANTHROPIC_API_KEY", "a")
 			withMockExec(t, func(mock *mockCmd) {
-				if err := harnesses["opencode"].InitHookFor(HarnessOptions{Inference: tt.inference})("sb"); err != nil {
+				if err := harnesses["opencode"].InitHookFor(HarnessOptions{Inference: inference})("sb"); err != nil {
 					t.Fatal(err)
 				}
-				if len(mock.calls) != 1 || !strings.Contains(strings.Join(mock.calls[0], " "), tt.wantVar) {
-					t.Errorf("calls = %v, want containing %s", mock.calls, tt.wantVar)
+				if len(mock.calls) != 0 {
+					t.Errorf("calls = %v, want none", mock.calls)
 				}
 			})
 		})
@@ -147,9 +144,9 @@ func TestCreateInferenceProvidersOpencode(t *testing.T) {
 		wantName        string
 		wantCred        string
 	}{
-		{"litellm", "", map[string]string{"LITELLM_API_KEY": "sk-l"}, "litellm-inference", "litellm_api_key=sk-l"},
-		{"anthropic", "", map[string]string{"ANTHROPIC_API_KEY": "sk-a"}, "anthropic", "api_key=sk-a"},
-		{"explicit anthropic", "anthropic", map[string]string{"ANTHROPIC_API_KEY": "sk-a", "LITELLM_API_KEY": "sk-l"}, "anthropic", "api_key=sk-a"},
+		{"litellm", "", map[string]string{"LITELLM_API_KEY": "sk-l"}, "litellm-inference", "LITELLM_API_KEY"},
+		{"anthropic", "", map[string]string{"ANTHROPIC_API_KEY": "sk-a"}, "anthropic", "ANTHROPIC_API_KEY"},
+		{"explicit anthropic", "anthropic", map[string]string{"ANTHROPIC_API_KEY": "sk-a", "LITELLM_API_KEY": "sk-l"}, "anthropic", "ANTHROPIC_API_KEY"},
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
@@ -165,14 +162,9 @@ func TestCreateInferenceProvidersOpencode(t *testing.T) {
 				if len(names) != 1 || names[0] != tt.wantName || len(flags) != 2 || flags[1] != tt.wantName {
 					t.Errorf("flags=%v names=%v", flags, names)
 				}
-				var create string
-				for _, c := range mock.calls {
-					if len(c) > 2 && c[2] == "create" {
-						create = strings.Join(c, " ")
-					}
-				}
-				if !strings.Contains(create, "--type "+tt.wantName) || !strings.Contains(create, tt.wantCred) {
-					t.Errorf("create call = %q", create)
+				keys, env := providerCreateCall(t, mock, tt.wantName)
+				if !slices.Equal(keys, []string{tt.wantCred}) || len(env) != 1 || !strings.HasPrefix(env[0], tt.wantCred+"=sk-") {
+					t.Errorf("keys = %v env-keys = %d", keys, len(env))
 				}
 			})
 		})
@@ -328,7 +320,7 @@ func TestHarnessOptionsFallthrough(t *testing.T) {
 		if err := harnesses["claude"].PreseedFor(HarnessOptions{})("sb"); err != nil || len(mock.calls) != 1 {
 			t.Errorf("claude preseed: %v %v", err, mock.calls)
 		}
-		if err := harnesses["pi"].InitHookFor(HarnessOptions{})("sb"); err != nil || len(mock.calls) != 2 {
+		if err := harnesses["pi"].InitHookFor(HarnessOptions{})("sb"); err != nil || len(mock.calls) != 1 { // claude preseed only; pi needs no init exec
 			t.Errorf("pi init: %v %v", err, mock.calls)
 		}
 	})

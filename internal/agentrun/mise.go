@@ -351,7 +351,11 @@ func runMisePhase(cfg *Config, sandboxName string, plan *cachePlan) error {
 	start := time.Now()
 	install := "source ~/.profile 2>/dev/null; cd " + sandboxRepoDir + " && mise trust " + sandboxRepoDir + " && mise install --yes"
 	if err := execCmd("openshell", "sandbox", "exec", "-n", sandboxName, "--", "bash", "-c", install); err != nil {
-		return fmt.Errorf("mise install failed: %w (if a tool needs a host outside the bootstrap allowlist, re-run with --mise-allow-host <host>[:port]; blocked hosts appear in the sandbox logs)", err)
+		// The sandbox is deleted right after this returns, so surface the
+		// denied hosts now (`openshell logs`, v0.1.4 main.rs Logs: -n, --since,
+		// --source sandbox).
+		printDeniedEgress(sandboxName)
+		return fmt.Errorf("mise install failed: %w (if a tool needs a host outside the bootstrap allowlist, re-run with --mise-allow-host <host>[:port]; denied connections, if any, are listed above because the sandbox is deleted on exit)", err)
 	}
 	fmt.Printf("[agent-run] mise: install finished in %s (cache: %s)\n", time.Since(start).Round(100*time.Millisecond), state)
 
@@ -372,6 +376,36 @@ func runMisePhase(cfg *Config, sandboxName string, plan *cachePlan) error {
 		fmt.Println("[agent-run] WARN: mise: no mise.lock found; downloads are not checksum-pinned. Run `mise lock` in the repo and commit mise.lock")
 	}
 	return nil
+}
+
+// printDeniedEgress prints the sandbox log lines that mention a denial, so the
+// operator can see which host to pass to --mise-allow-host after the sandbox
+// has been cleaned up. Best effort: it never fails the run.
+func printDeniedEgress(sandboxName string) {
+	out, err := execCmdOutput("openshell", "logs", sandboxName, "--source", "sandbox", "--since", "15m", "-n", "500")
+	if err != nil {
+		fmt.Printf("[agent-run] WARN: could not read sandbox logs: %v\n", err)
+		return
+	}
+	var denied []string
+	for _, line := range strings.Split(out, "\n") {
+		l := strings.ToLower(line)
+		if strings.Contains(l, "deny") || strings.Contains(l, "denied") || strings.Contains(l, "blocked") {
+			denied = append(denied, strings.TrimSpace(line))
+		}
+	}
+	if len(denied) == 0 {
+		fmt.Println("[agent-run] mise: no denied connections found in the sandbox logs")
+		return
+	}
+	const maxLines = 20
+	if len(denied) > maxLines {
+		denied = denied[len(denied)-maxLines:]
+	}
+	fmt.Println("[agent-run] mise: denied connections from the sandbox logs (last up to 20):")
+	for _, line := range denied {
+		fmt.Printf("[agent-run]   %s\n", line)
+	}
 }
 
 // cacheState describes the cache for logging: "none (ephemeral)", "cold"

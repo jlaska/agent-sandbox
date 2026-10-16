@@ -164,6 +164,10 @@ func renderPolicy(content string, data policyData) (string, error) {
 // agent starts (two-phase narrowing).
 const miseBootstrapRule = "mise_bootstrap"
 
+// alwaysPresentRule is a network_policies key every generated policy contains
+// (openshell/sandbox-policy.yaml); verifyNarrowed uses it as a sanity anchor.
+const alwaysPresentRule = "github_git"
+
 // revokeTokenFn is RevokeToken, replaceable in tests.
 var revokeTokenFn = RevokeToken
 
@@ -185,24 +189,58 @@ func narrowPolicy(_ *Config, sandboxName string) error {
 	return nil
 }
 
+// narrowOutcome reports which fail-closed cleanups enforceNarrowing completed,
+// so the caller's deferred cleanup only skips what is really done and retries
+// the rest.
+type narrowOutcome struct {
+	SandboxDeleted bool
+	TokenRevoked   bool
+}
+
 // enforceNarrowing runs narrowPolicy and fails closed: if narrowing or its
 // verification fails, the sandbox is deleted and the GitHub token revoked
 // before the error is returned, so the agent can never run with bootstrap
-// egress.
-func enforceNarrowing(cfg *Config, sandboxName string, cred *GitHubCredential) error {
+// egress. The sandbox's policy revisions are printed first (they die with the
+// sandbox). The error states truthfully whether the delete succeeded; when it
+// did not, the caller's deferred cleanup retries it.
+func enforceNarrowing(cfg *Config, sandboxName string, cred *GitHubCredential) (narrowOutcome, error) {
+	var out narrowOutcome
 	err := narrowPolicy(cfg, sandboxName)
 	if err == nil {
-		return nil
+		return out, nil
 	}
 	fmt.Printf("[agent-run] ERROR: egress narrowing failed: %v\n", err)
+	printPolicyHistory(sandboxName)
 	fmt.Printf("[agent-run] Failing closed: deleting sandbox %s and revoking credentials.\n", sandboxName)
-	_ = execCmdSilent("openshell", "sandbox", "delete", sandboxName)
+	status := "sandbox deleted"
+	if derr := execCmdSilent("openshell", "sandbox", "delete", sandboxName); derr != nil {
+		fmt.Printf("[agent-run] warning: sandbox delete failed: %v (will retry during cleanup)\n", derr)
+		status = fmt.Sprintf("SANDBOX DELETE FAILED (%v; cleanup will retry, otherwise run: openshell sandbox delete %s)", derr, sandboxName)
+	} else {
+		out.SandboxDeleted = true
+	}
 	if cred != nil && cred.Revocable() {
 		if rerr := revokeTokenFn(cred.Token); rerr != nil {
-			fmt.Printf("[agent-run] warning: token revoke failed: %v\n", rerr)
+			fmt.Printf("[agent-run] warning: token revoke failed: %v (will retry during cleanup)\n", rerr)
+		} else {
+			out.TokenRevoked = true
 		}
 	}
-	return fmt.Errorf("egress narrowing failed (sandbox deleted, agent not launched): %w", err)
+	return out, fmt.Errorf("egress narrowing failed (%s, agent not launched): %w", status, err)
+}
+
+// printPolicyHistory prints `openshell policy list <sandbox>` (revision
+// statuses and load errors) so the evidence survives the sandbox delete.
+func printPolicyHistory(sandboxName string) {
+	out, err := execCmdOutput("openshell", "policy", "list", sandboxName)
+	out = strings.TrimSpace(out)
+	if err != nil || out == "" {
+		return
+	}
+	fmt.Printf("[agent-run] Policy revisions of %s before deletion:\n", sandboxName)
+	for _, line := range strings.Split(out, "\n") {
+		fmt.Printf("[agent-run]   %s\n", line)
+	}
 }
 
 // policyGetDoc is the subset of `openshell policy get -o json` we read.
@@ -254,6 +292,14 @@ func verifyNarrowed(sandboxName string) (uint32, error) {
 	}
 	if eff.Policy == nil {
 		return 0, fmt.Errorf("verification failed: policy get returned no policy payload")
+	}
+	// An empty or truncated rule set would pass the absence check below
+	// vacuously; github_git is in every generated policy, so require it.
+	if len(eff.Policy.NetworkPolicies) == 0 {
+		return 0, fmt.Errorf("verification failed: effective policy has no network_policies")
+	}
+	if _, ok := eff.Policy.NetworkPolicies[alwaysPresentRule]; !ok {
+		return 0, fmt.Errorf("verification failed: effective policy lacks the always-present %s rule (unexpected policy payload)", alwaysPresentRule)
 	}
 	for key, rule := range eff.Policy.NetworkPolicies {
 		if key == miseBootstrapRule || rule.Name == miseBootstrapRule || rule.Name == "mise-bootstrap" {

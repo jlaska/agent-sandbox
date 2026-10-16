@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -111,34 +112,108 @@ func profileInstalled(id string) bool {
 
 // ensureProfile imports a provider profile from the embedded FS unless the
 // gateway already has it. OpenShell 0.1.4 ships no built-in profiles, so
-// `provider create --type <id>` fails until the profile is imported.
+// `provider create --type <id>` fails until the profile is imported. If the
+// gateway already has the id (for example the stock upstream `anthropic`
+// profile, whose binaries name only curl), its `binaries` are compared with
+// ours and the profile is updated when they differ.
 func ensureProfile(id string) error {
 	path, ok := profileFiles[id]
 	if !ok {
 		return fmt.Errorf("unknown provider profile %q", id)
 	}
-	if profileInstalled(id) {
-		return nil
-	}
 	data, err := profileData(id, path)
 	if err != nil {
 		return err
 	}
+	if profileInstalled(id) {
+		return reconcileProfile(id, data)
+	}
+	tmp, cleanup, err := stageProfile(id, data)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	fmt.Printf("[agent-run] Importing provider profile %s...\n", id)
+	if err := execCmd("openshell", "provider", "profile", "import", "--file", tmp); err != nil {
+		return fmt.Errorf("failed to import %s provider profile: %w", id, err)
+	}
+	return nil
+}
+
+func stageProfile(id string, data []byte) (path string, cleanup func(), err error) {
 	tmp, err := os.CreateTemp("", "agent-run-profile-*.yaml")
 	if err != nil {
-		return fmt.Errorf("failed to stage provider profile %s: %w", id, err)
+		return "", nil, fmt.Errorf("failed to stage provider profile %s: %w", id, err)
 	}
-	defer func() { _ = os.Remove(tmp.Name()) }()
+	cleanup = func() { _ = os.Remove(tmp.Name()) }
 	if _, err := tmp.Write(data); err != nil {
 		_ = tmp.Close()
-		return fmt.Errorf("failed to stage provider profile %s: %w", id, err)
+		cleanup()
+		return "", nil, fmt.Errorf("failed to stage provider profile %s: %w", id, err)
 	}
 	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("failed to stage provider profile %s: %w", id, err)
+		cleanup()
+		return "", nil, fmt.Errorf("failed to stage provider profile %s: %w", id, err)
 	}
-	fmt.Printf("[agent-run] Importing provider profile %s...\n", id)
-	if err := execCmd("openshell", "provider", "profile", "import", "--file", tmp.Name()); err != nil {
-		return fmt.Errorf("failed to import %s provider profile: %w", id, err)
+	return tmp.Name(), cleanup, nil
+}
+
+// reconcileProfile updates an installed profile whose binaries differ from the
+// desired document. `provider profile export <id> -o json` supplies the current
+// binaries and resource_version; `provider profile update <id> -f` requires that
+// non-zero resource_version (server handle_update_provider_profiles, v0.1.4
+// crates/openshell-server/src/grpc/provider.rs). Problems here are warnings:
+// the run continues with the profile as the gateway has it.
+func reconcileProfile(id string, desired []byte) error {
+	var want struct {
+		Binaries []string `yaml:"binaries"`
+	}
+	if err := yaml.Unmarshal(desired, &want); err != nil {
+		return fmt.Errorf("failed to parse embedded profile %s: %w", id, err)
+	}
+	out, err := execCmdOutput("openshell", "provider", "profile", "export", id, "-o", "json")
+	if err != nil {
+		fmt.Printf("[agent-run] WARN: could not export provider profile %s to check its binaries: %v\n", id, err)
+		return nil
+	}
+	var have struct {
+		ResourceVersion uint64   `json:"resource_version"`
+		Binaries        []string `json:"binaries"`
+	}
+	if json.Unmarshal([]byte(extractJSONObject(out)), &have) != nil {
+		fmt.Printf("[agent-run] WARN: could not parse exported provider profile %s; leaving it as is\n", id)
+		return nil
+	}
+	a, b := slices.Clone(want.Binaries), slices.Clone(have.Binaries)
+	slices.Sort(a)
+	slices.Sort(b)
+	if slices.Equal(a, b) {
+		return nil
+	}
+	if have.ResourceVersion == 0 {
+		fmt.Printf("[agent-run] WARN: provider profile %s has different binaries than agent-run expects but no resource_version; leaving it as is\n", id)
+		return nil
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal(desired, &doc); err != nil || len(doc.Content) == 0 {
+		return fmt.Errorf("failed to parse embedded profile %s: %v", id, err)
+	}
+	root := doc.Content[0]
+	root.Content = append(root.Content,
+		&yaml.Node{Kind: yaml.ScalarNode, Value: "resource_version"},
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!int", Value: strconv.FormatUint(have.ResourceVersion, 10)})
+	updated, err := yaml.Marshal(&doc)
+	if err != nil {
+		return fmt.Errorf("failed to render profile %s: %w", id, err)
+	}
+	tmp, cleanup, err := stageProfile(id, updated)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	fmt.Printf("[agent-run] Updating provider profile %s (binaries %v -> %v)...\n", id, have.Binaries, want.Binaries)
+	if err := execCmd("openshell", "provider", "profile", "update", id, "--file", tmp); err != nil {
+		fmt.Printf("[agent-run] WARN: could not update provider profile %s: %v (sandboxes attached to it block updates; the stale binaries may deny %v)\n", id, err, want.Binaries)
 	}
 	return nil
 }

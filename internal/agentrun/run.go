@@ -1,11 +1,14 @@
 package agentrun
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -23,8 +26,32 @@ const (
 	SandboxReadyPoll    = 1 * time.Second
 )
 
+// ErrInterrupted is returned (wrapped) when a run was cut short by SIGINT or
+// SIGTERM. Cleanup has already run by the time the caller sees it.
+var ErrInterrupted = errors.New("interrupted by signal")
+
 // Run executes the agent-run command with the given configuration.
-func Run(cfg *Config) error {
+func Run(cfg *Config) error { return RunContext(context.Background(), cfg) }
+
+// RunContext is Run with a context that is cancelled on SIGINT/SIGTERM (see
+// cmd/agent-run). Cancellation stops the run at the next step, terminates any
+// running child, and then runs the normal cleanup exactly once (sandbox delete,
+// token revoke, provider delete).
+func RunContext(ctx context.Context, cfg *Config) error {
+	err := run(ctx, cfg)
+	if ctx.Err() != nil {
+		if err != nil {
+			if errors.Is(err, ErrInterrupted) {
+				return err
+			}
+			return fmt.Errorf("%w: %v", ErrInterrupted, err)
+		}
+		return ErrInterrupted
+	}
+	return err
+}
+
+func run(ctx context.Context, cfg *Config) error {
 	if cfg.Help || cfg.ListRepos {
 		return nil
 	}
@@ -72,13 +99,34 @@ func Run(cfg *Config) error {
 		providersCreated []string
 	)
 
-	// Cleanup function
-	defer func() {
+	// From here on children run under ctx; the cleanup below restores a
+	// background context first so its own commands are not cancelled.
+	restoreChildCtx := setChildContext(ctx)
+	// interrupted is checked between steps; children also fail fast once ctx
+	// is cancelled, but the mocked/ignored-error steps need an explicit check.
+	interrupted := func() error {
+		if ctx.Err() != nil {
+			return ErrInterrupted
+		}
+		return nil
+	}
+
+	// Cleanup runs exactly once, on every exit path including SIGINT/SIGTERM
+	// (the signal only cancels ctx; it never skips this deferred function).
+	var cleanupOnce sync.Once
+	defer cleanupOnce.Do(func() {
+		restoreChildCtx()
 		fmt.Println("--- Cleanup ---")
+		if ctx.Err() != nil {
+			fmt.Println("  Interrupted by signal.")
+		}
 		if cleanupSandbox != "" {
 			fmt.Printf("  Deleting sandbox: %s ... ", cleanupSandbox)
-			_ = execCmdSilent("openshell", "sandbox", "delete", cleanupSandbox)
-			fmt.Println("done")
+			if err := execCmdSilent("openshell", "sandbox", "delete", cleanupSandbox); err != nil {
+				fmt.Printf("warning: %v (delete it manually: openshell sandbox delete %s)\n", err, cleanupSandbox)
+			} else {
+				fmt.Println("done")
+			}
 		}
 		if ghCred != nil && ghCred.Revocable() {
 			fmt.Print("  Revoking installation token ... ")
@@ -94,7 +142,7 @@ func Run(cfg *Config) error {
 			fmt.Println("done")
 		}
 		fmt.Println("  Cleanup complete.")
-	}()
+	})
 
 	// Log configuration
 	fmt.Printf("[agent-run] Repository: %s\n", cfg.Repo)
@@ -166,14 +214,20 @@ func Run(cfg *Config) error {
 		return err
 	}
 
+	if err := interrupted(); err != nil {
+		return err
+	}
+
 	// Step 4: Create providers (GitHub + inference)
 	fmt.Println("[agent-run] Creating GitHub provider...")
 	_ = execCmd("openshell", "provider", "delete", GitHubProviderName)
-	if err := execCmd("openshell", "provider", "create",
-		"--name", GitHubProviderName,
-		"--type", "github-agent",
-		"--credential", fmt.Sprintf("api_token=%s", cred.Token),
-	); err != nil {
+	// The github-agent profile declares GITHUB_TOKEN and GH_TOKEN; 0.1.4 only
+	// accepts those as stored keys, and the sandbox gets a placeholder under
+	// each name (gh reads GH_TOKEN first, then GITHUB_TOKEN).
+	if err := createProvider(GitHubProviderName, "github-agent", []credentialPair{
+		{"GITHUB_TOKEN", cred.Token},
+		{"GH_TOKEN", cred.Token},
+	}); err != nil {
 		return fmt.Errorf("failed to create GitHub provider: %w", err)
 	}
 	providersCreated = append(providersCreated, GitHubProviderName)
@@ -190,6 +244,10 @@ func Run(cfg *Config) error {
 		fmt.Printf("[agent-run] Forwarding %d inference env var(s) to sandbox.\n", len(envFlags)/2)
 	}
 
+	if err := interrupted(); err != nil {
+		return err
+	}
+
 	// Step 5: Generate repo-specific policy
 	fmt.Printf("[agent-run] Generating sandbox policy for %s...\n", cfg.Repo)
 	policyTmp, err := GeneratePolicyWithHosts(cfg.Repo, repoRoot, cfg.MiseAllowHosts)
@@ -198,10 +256,18 @@ func Run(cfg *Config) error {
 	}
 	defer func() { _ = os.Remove(policyTmp) }()
 
+	if err := interrupted(); err != nil {
+		return err
+	}
+
 	// Step 6: Prepare the per-repo mise cache (degrades to none on problems)
 	driver := detectDriver(cfg.Driver)
 	cache, err := prepareCache(cfg, driver)
 	if err != nil {
+		return err
+	}
+
+	if err := interrupted(); err != nil {
 		return err
 	}
 
@@ -215,11 +281,19 @@ func Run(cfg *Config) error {
 		return fmt.Errorf("failed to create sandbox: %w", err)
 	}
 
+	if err := interrupted(); err != nil {
+		return err
+	}
+
 	// Wait for sandbox to be ready
-	if err := waitForSandbox(sandboxName); err != nil {
+	if err := waitForSandbox(ctx, sandboxName); err != nil {
 		return err
 	}
 	fmt.Println("[agent-run] Sandbox ready.")
+
+	if err := interrupted(); err != nil {
+		return err
+	}
 
 	// Step 8: Map provider credentials to harness env vars + pre-seed config
 	if err := harness.InitHookFor(opts)(sandboxName); err != nil {
@@ -229,11 +303,19 @@ func Run(cfg *Config) error {
 		return fmt.Errorf("harness config setup failed: %w", err)
 	}
 
+	if err := interrupted(); err != nil {
+		return err
+	}
+
 	// Step 9a: Configure global git credential helper (must happen before clone for private repos)
 	fmt.Println("[agent-run] Configuring Git credentials...")
-	credHelper := `git config --global credential.helper '!f() { echo "username=x-access-token"; echo "password=${api_token:-$GH_TOKEN}"; }; f'`
+	credHelper := `git config --global credential.helper '!f() { echo "username=x-access-token"; echo "password=${GH_TOKEN:-$GITHUB_TOKEN}"; }; f'`
 	if err := execCmd("openshell", "sandbox", "exec", "-n", sandboxName, "--", "sh", "-c", credHelper); err != nil {
 		return fmt.Errorf("git credential setup failed: %w", err)
+	}
+
+	if err := interrupted(); err != nil {
+		return err
 	}
 
 	// Step 9b: Clone repository
@@ -241,6 +323,10 @@ func Run(cfg *Config) error {
 	if err := execCmd("openshell", "sandbox", "exec", "-n", sandboxName, "--",
 		"git", "clone", fmt.Sprintf("https://github.com/%s.git", cfg.Repo), "/sandbox/repo"); err != nil {
 		return fmt.Errorf("clone failed: %w", err)
+	}
+
+	if err := interrupted(); err != nil {
+		return err
 	}
 
 	// Step 9c: Configure Git identity
@@ -256,15 +342,34 @@ func Run(cfg *Config) error {
 		return fmt.Errorf("git configuration failed: %w", err)
 	}
 
+	if err := interrupted(); err != nil {
+		return err
+	}
+
 	// Step 10: mise toolchain install (egress via the temporary mise_bootstrap rule)
 	if err := runMisePhase(cfg, sandboxName, cache); err != nil {
 		return err
 	}
 
+	if err := interrupted(); err != nil {
+		return err
+	}
+
 	// Step 11: Narrow egress before the agent starts. Fails closed: on error
 	// the sandbox is deleted and the token revoked before returning.
-	if err := enforceNarrowing(cfg, sandboxName, ghCred); err != nil {
-		cleanupSandbox, ghCred = "", nil // already cleaned up; skip in deferred cleanup
+	res, err := enforceNarrowing(cfg, sandboxName, ghCred)
+	if err != nil {
+		// Skip in the deferred cleanup only what enforceNarrowing really did;
+		// a failed sandbox delete is retried there.
+		if res.SandboxDeleted {
+			cleanupSandbox = ""
+		}
+		if res.TokenRevoked {
+			ghCred = nil
+		}
+		return err
+	}
+	if err := interrupted(); err != nil {
 		return err
 	}
 
@@ -277,6 +382,8 @@ func Run(cfg *Config) error {
 	fmt.Println("---")
 
 	launchCmd := buildLaunchCmd(harness, cfg)
+	// The harness's exit status is not an agent-run failure. If SIGINT/SIGTERM
+	// ended it, RunContext reports the interruption after cleanup.
 	_ = execCmd("openshell", "sandbox", "exec", "-n", sandboxName, "--workdir", "/sandbox/repo", "--tty", "--",
 		"bash", "-c", launchCmd)
 
@@ -312,17 +419,19 @@ func buildLaunchCmd(h *Harness, cfg *Config) string {
 	for _, a := range cfg.PassthroughArgs {
 		parts = append(parts, shellQuote(a))
 	}
-	return fmt.Sprintf("source ~/.profile 2>/dev/null; export GH_TOKEN=$api_token; exec %s %s", h.Command, strings.Join(parts, " "))
+	return fmt.Sprintf("source ~/.profile 2>/dev/null; exec %s %s", h.Command, strings.Join(parts, " "))
 }
 
 // waitForSandbox waits for a sandbox to become ready.
-func waitForSandbox(name string) error {
+func waitForSandbox(ctx context.Context, name string) error {
 	timeout := time.After(SandboxReadyTimeout)
 	ticker := time.NewTicker(SandboxReadyPoll)
 	defer ticker.Stop()
 
 	for {
 		select {
+		case <-ctx.Done():
+			return ErrInterrupted
 		case <-timeout:
 			return fmt.Errorf("sandbox did not become ready within %v", SandboxReadyTimeout)
 		case <-ticker.C:
