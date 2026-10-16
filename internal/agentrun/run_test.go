@@ -50,19 +50,6 @@ func TestBuildLaunchCmd(t *testing.T) {
 	}
 }
 
-func TestWP4bSeamsAreNoOps(t *testing.T) {
-	cfg := &Config{}
-	if j, err := prepareCache(cfg, "docker"); j != "" || err != nil {
-		t.Errorf("prepareCache = %q, %v", j, err)
-	}
-	if err := runMisePhase(cfg, "sb"); err != nil {
-		t.Error(err)
-	}
-	if err := narrowPolicy(cfg, "sb"); err != nil {
-		t.Error(err)
-	}
-}
-
 func TestPrintDiagnostics(t *testing.T) {
 	withMockExec(t, func(mock *mockCmd) {
 		mock.execOutput = func(_ string, args ...string) (string, error) {

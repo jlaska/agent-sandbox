@@ -224,6 +224,20 @@ func (c *Config) Validate() error {
 	if c.Inference != "" && !oneOf(c.Inference, inferenceBackends) {
 		return fmt.Errorf("invalid --inference %q; supported: %s", c.Inference, strings.Join(inferenceBackends, ", "))
 	}
+	if c.Inference != "" && c.Harness != HarnessOpencode {
+		return fmt.Errorf("--inference applies to the opencode harness only (harness is %q)", c.Harness)
+	}
+	if c.Harness == HarnessOpencode {
+		// Fail before any sandbox exists if no usable backend/key is available.
+		if _, err := resolveOpencodeBackend(c.Inference, c.EnvVars); err != nil {
+			return err
+		}
+	}
+	// --fresh-cache clears the persistent per-repo cache; --no-cache means there
+	// is none, so the combination is contradictory (and would silently do nothing).
+	if c.FreshCache && c.NoCache {
+		return fmt.Errorf("--fresh-cache and --no-cache are mutually exclusive: --no-cache mounts no persistent cache, so there is nothing to clear")
+	}
 	if c.Driver != "" && !oneOf(c.Driver, computeDrivers) {
 		return fmt.Errorf("invalid --driver %q; supported: %s", c.Driver, strings.Join(computeDrivers, ", "))
 	}

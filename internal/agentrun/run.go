@@ -48,7 +48,7 @@ func Run(cfg *Config) error {
 
 	if cfg.GeneratePolicy {
 		repoRoot := findRepoRoot()
-		policyPath, err := GeneratePolicy(cfg.Repo, repoRoot)
+		policyPath, err := GeneratePolicyWithHosts(cfg.Repo, repoRoot, cfg.MiseAllowHosts)
 		if err != nil {
 			return err
 		}
@@ -81,7 +81,7 @@ func Run(cfg *Config) error {
 		}
 		if ghCred != nil && ghCred.Revocable() {
 			fmt.Print("  Revoking installation token ... ")
-			if err := RevokeToken(ghCred.Token); err != nil {
+			if err := revokeTokenFn(ghCred.Token); err != nil {
 				fmt.Printf("warning: %v\n", err)
 			} else {
 				fmt.Println("done")
@@ -156,7 +156,12 @@ func Run(cfg *Config) error {
 
 	// Step 3: Ensure provider profiles are imported (0.1.4 has no built-ins)
 	fmt.Println("[agent-run] Ensuring provider profiles...")
-	if err := ensureProfiles(harness); err != nil {
+	opts := HarnessOptions{Inference: cfg.Inference, Model: cfg.Model, ExplicitEnv: cfg.EnvVars}
+	harnessProfiles, err := harness.ProvidersFor(opts)
+	if err != nil {
+		return err
+	}
+	if err := ensureProfiles(harnessProfiles); err != nil {
 		return err
 	}
 
@@ -172,7 +177,7 @@ func Run(cfg *Config) error {
 	}
 	providersCreated = append(providersCreated, GitHubProviderName)
 
-	inferenceFlags, inferenceProviders, err := createInferenceProviders(cfg.Harness, cfg.EnvVars)
+	inferenceFlags, inferenceProviders, err := createInferenceProvidersFor(cfg.Harness, cfg.Inference, cfg.EnvVars)
 	if err != nil {
 		return fmt.Errorf("failed to create inference providers: %w", err)
 	}
@@ -186,23 +191,25 @@ func Run(cfg *Config) error {
 
 	// Step 5: Generate repo-specific policy
 	fmt.Printf("[agent-run] Generating sandbox policy for %s...\n", cfg.Repo)
-	policyTmp, err := GeneratePolicy(cfg.Repo, repoRoot)
+	policyTmp, err := GeneratePolicyWithHosts(cfg.Repo, repoRoot, cfg.MiseAllowHosts)
 	if err != nil {
 		return fmt.Errorf("failed to generate policy: %w", err)
 	}
 	defer func() { _ = os.Remove(policyTmp) }()
 
-	// Step 6: Prepare the mise cache (WP4b seam; no-op until implemented)
+	// Step 6: Prepare the per-repo mise cache (degrades to none on problems)
 	driver := detectDriver(cfg.Driver)
-	driverConfigJSON, err := prepareCache(cfg, driver)
+	cache, err := prepareCache(cfg, driver)
 	if err != nil {
 		return err
 	}
 
 	// Step 7: Create sandbox from the harness image
 	fmt.Printf("[agent-run] Creating sandbox '%s'...\n", sandboxName)
-	createArgs := buildCreateArgs(sandboxName, image, policyTmp, inferenceFlags, envFlags, driverConfigJSON)
-	if err := execCmd("openshell", createArgs...); err != nil {
+	buildArgs := func(driverConfigJSON string) []string {
+		return buildCreateArgs(sandboxName, image, policyTmp, inferenceFlags, envFlags, driverConfigJSON)
+	}
+	if err := createSandbox(sandboxName, buildArgs, cache); err != nil {
 		return fmt.Errorf("failed to create sandbox: %w", err)
 	}
 
@@ -213,10 +220,10 @@ func Run(cfg *Config) error {
 	fmt.Println("[agent-run] Sandbox ready.")
 
 	// Step 8: Map provider credentials to harness env vars + pre-seed config
-	if err := harness.InitHook()(sandboxName); err != nil {
+	if err := harness.InitHookFor(opts)(sandboxName); err != nil {
 		return fmt.Errorf("sandbox credential setup failed: %w", err)
 	}
-	if err := harness.Preseed()(sandboxName); err != nil {
+	if err := harness.PreseedFor(opts)(sandboxName); err != nil {
 		return fmt.Errorf("harness config setup failed: %w", err)
 	}
 
@@ -247,14 +254,15 @@ func Run(cfg *Config) error {
 		return fmt.Errorf("git configuration failed: %w", err)
 	}
 
-	// Step 10: mise toolchain install (WP4b seam; no-op until implemented)
-	if err := runMisePhase(cfg, sandboxName); err != nil {
+	// Step 10: mise toolchain install (egress via the temporary mise_bootstrap rule)
+	if err := runMisePhase(cfg, sandboxName, cache); err != nil {
 		return err
 	}
 
-	// Step 11: Narrow egress before the agent starts (WP4b seam; no-op until
-	// implemented). Must fail closed: an error here aborts before launch.
-	if err := narrowPolicy(cfg, sandboxName); err != nil {
+	// Step 11: Narrow egress before the agent starts. Fails closed: on error
+	// the sandbox is deleted and the token revoked before returning.
+	if err := enforceNarrowing(cfg, sandboxName, ghCred); err != nil {
+		sandboxName, ghCred = "", nil // already cleaned up; skip in deferred cleanup
 		return err
 	}
 
@@ -272,25 +280,6 @@ func Run(cfg *Config) error {
 
 	fmt.Println("\n[agent-run] Harness exited. Cleaning up...")
 
-	return nil
-}
-
-// prepareCache is step 6: ensure the per-repo mise cache exists for the driver
-// and return the --driver-config-json value that mounts it ("" = no mount).
-// WP4b seam: no-op until the cache is implemented.
-func prepareCache(cfg *Config, driver string) (driverConfigJSON string, err error) {
-	return "", nil
-}
-
-// runMisePhase is step 10: install the target repo's mise toolchain.
-// WP4b seam: no-op until mise support is implemented.
-func runMisePhase(cfg *Config, sandboxName string) error {
-	return nil
-}
-
-// narrowPolicy is step 11: remove mise_bootstrap egress and verify, always
-// (even when mise was skipped). WP4b seam: no-op until narrowing is implemented.
-func narrowPolicy(cfg *Config, sandboxName string) error {
 	return nil
 }
 
@@ -385,6 +374,37 @@ func printDiagnostics(cfg *Config) error {
 	driver := detectDriver(driverOverride)
 	fmt.Printf("  Compute driver:     %s\n", driver)
 	fmt.Printf("  Driver config:      cache mounts need gateway setting %s\n", allowDriverConfigHint(driver))
+
+	// mise cache volume (docker/podman only; PVCs live in the sandbox namespace)
+	if cfg != nil && cfg.Repo != "" && (driver == "docker" || driver == "podman") {
+		if owner, name, err := ParseRepo(cfg.Repo); err == nil {
+			vol := cacheVolumeName(owner, name)
+			state := "absent (created on first run)"
+			if execCmdSilent(driver, "volume", "inspect", vol) == nil {
+				state = "present"
+			}
+			fmt.Printf("  mise cache volume:  %s (%s)\n", vol, state)
+		}
+	}
+
+	// opencode backend selection
+	{
+		var env []string
+		inference := ""
+		if cfg != nil {
+			env, inference = cfg.EnvVars, cfg.Inference
+		}
+		backend, err := resolveOpencodeBackend(inference, env)
+		if err != nil {
+			backend = "unavailable (" + err.Error() + ")"
+		}
+		fmt.Printf("  opencode backend:   %s\n", backend)
+		if resolveCredential("LITELLM_BASE_URL", env) != "" {
+			fmt.Println("  LITELLM_BASE_URL:   set")
+		} else {
+			fmt.Println("  LITELLM_BASE_URL:   not set")
+		}
+	}
 
 	fmt.Println("  Token minting:      Go-native (repo-scoped)")
 	fmt.Printf("  Installation ID:    %s\n", InstallationID)

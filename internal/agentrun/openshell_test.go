@@ -3,8 +3,12 @@ package agentrun
 import (
 	"errors"
 	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 // captureStdout returns everything fn printed to os.Stdout.
@@ -182,7 +186,7 @@ func TestEnsureProfile(t *testing.T) {
 func TestEnsureProfiles(t *testing.T) {
 	withMockExec(t, func(mock *mockCmd) {
 		mock.execOutput = func(string, ...string) (string, error) { return "[]", nil }
-		if err := ensureProfiles(harnesses["pi"]); err != nil {
+		if err := ensureProfiles(harnesses["pi"].Providers()); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		var imports int
@@ -234,5 +238,88 @@ func TestAllowDriverConfigHint(t *testing.T) {
 	}
 	if got := allowDriverConfigHint("unknown"); !strings.Contains(got, "<driver>") {
 		t.Errorf("got %q", got)
+	}
+}
+
+// imageBinaries returns the union of every openshell/images/*/binaries.txt.
+func imageBinaries(t *testing.T) map[string]bool {
+	t.Helper()
+	files, err := filepath.Glob("../../openshell/images/*/binaries.txt")
+	if err != nil || len(files) == 0 {
+		t.Fatalf("no binaries.txt files found: %v", err)
+	}
+	bins := map[string]bool{}
+	for _, f := range files {
+		data, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			if line = strings.TrimSpace(line); line != "" && !strings.HasPrefix(line, "#") {
+				bins[line] = true
+			}
+		}
+	}
+	return bins
+}
+
+func TestProfileData(t *testing.T) {
+	t.Run("overrides vendored binaries and keeps the rest", func(t *testing.T) {
+		data, err := profileData("anthropic", profileFiles["anthropic"])
+		if err != nil {
+			t.Fatal(err)
+		}
+		var p struct {
+			ID        string   `yaml:"id"`
+			Binaries  []string `yaml:"binaries"`
+			Endpoints []struct {
+				Host string `yaml:"host"`
+			} `yaml:"endpoints"`
+		}
+		if err := yaml.Unmarshal(data, &p); err != nil {
+			t.Fatal(err)
+		}
+		if p.ID != "anthropic" || len(p.Endpoints) != 1 || p.Endpoints[0].Host != "api.anthropic.com" {
+			t.Errorf("profile content not preserved: %+v", p)
+		}
+		if want := profileBinaries["anthropic"]; !reflect.DeepEqual(p.Binaries, want) {
+			t.Errorf("binaries = %v, want %v", p.Binaries, want)
+		}
+	})
+
+	t.Run("profiles without an override are unchanged", func(t *testing.T) {
+		data, err := profileData("github-agent", profileFiles["github-agent"])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(data), "id: github-agent") {
+			t.Errorf("unexpected content:\n%s", data)
+		}
+	})
+}
+
+// Every binary a provider profile grants (after overrides) must be a real path
+// that some image provides, or the provider's endpoints are unreachable.
+func TestProfileBinariesExistInImages(t *testing.T) {
+	images := imageBinaries(t)
+	for id, path := range profileFiles {
+		data, err := profileData(id, path)
+		if err != nil {
+			t.Fatalf("%s: %v", id, err)
+		}
+		var p struct {
+			Binaries []string `yaml:"binaries"`
+		}
+		if err := yaml.Unmarshal(data, &p); err != nil {
+			t.Fatalf("%s: %v", id, err)
+		}
+		if len(p.Binaries) == 0 {
+			t.Errorf("%s: no binaries", id)
+		}
+		for _, b := range p.Binaries {
+			if !images[b] {
+				t.Errorf("%s: binary %s is not in any openshell/images/*/binaries.txt", id, b)
+			}
+		}
 	}
 }

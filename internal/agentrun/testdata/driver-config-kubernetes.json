@@ -1,0 +1,1 @@
+{"kubernetes":{"volumes":[{"name":"mise-cache","persistent_volume_claim":{"claim_name":"mise-cache-jlaska-agent-sandbox","read_only":false}}],"containers":{"agent":{"volume_mounts":[{"name":"mise-cache","mount_path":"/sandbox/.mise-cache","read_only":false}]}}}}

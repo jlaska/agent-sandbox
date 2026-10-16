@@ -19,10 +19,9 @@ BUILD_DIR := ./bin
 
 .PHONY: all build clean test lint install setup help images image-claude image-pi image-opencode smoke lint-images lint-ci
 
-# Extra flags for tests/images/smoke.sh (e.g. SMOKE_FLAGS=--skip-network).
-# --skip-policy-contract is temporary: sandbox-policy.yaml still lists paths no image provides;
-# WP4b removes them and this default (run `make smoke SMOKE_FLAGS=` for the strict check).
-SMOKE_FLAGS ?= --skip-policy-contract
+# Extra flags for tests/images/smoke.sh (e.g. SMOKE_FLAGS=--skip-network). The strict
+# policy-path contract (every policy binary is in binaries.txt) always runs by default.
+SMOKE_FLAGS ?=
 
 # Harnesses covered by `make smoke` (CI passes one, e.g. `make smoke HARNESSES=pi`).
 HARNESSES ?= claude pi opencode

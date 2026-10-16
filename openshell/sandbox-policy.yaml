@@ -83,7 +83,6 @@ network_policies:
               method: GET
               path: "/app"
     binaries:
-      - { path: /usr/bin/gh }
       - { path: /usr/local/bin/gh }
       - { path: /usr/bin/git }
       - { path: /usr/lib/git-core/git-remote-http }
@@ -106,7 +105,6 @@ network_policies:
           - operation_type: mutation
             fields: [mergePullRequest, enablePullRequestAutoMerge]
     binaries:
-      - { path: /usr/bin/gh }
       - { path: /usr/local/bin/gh }
 
   litellm_inference:
@@ -124,16 +122,10 @@ network_policies:
               method: GET
               path: "/**"
     binaries:
-      - { path: /usr/bin/claude }
       - { path: /usr/local/bin/claude }
-      - { path: /usr/bin/node }
       - { path: /usr/local/bin/node }
-      - { path: /usr/bin/pi }
-      - { path: /usr/local/bin/pi }
-      - { path: /usr/bin/python3 }
-      - { path: /usr/local/bin/python3 }
+      - { path: /usr/bin/python3.12 }
       - { path: /usr/bin/curl }
-      - { path: /usr/local/bin/curl }
 
   npm_registry:
     name: npm-registry
@@ -148,9 +140,6 @@ network_policies:
               method: GET
               path: "/**"
     binaries:
-      - { path: /usr/bin/npm }
-      - { path: /usr/local/bin/npm }
-      - { path: /usr/bin/node }
       - { path: /usr/local/bin/node }
 
   vertex_ai:
@@ -209,9 +198,7 @@ network_policies:
               method: POST
               path: "/token"
     binaries:
-      - { path: /usr/bin/claude }
       - { path: /usr/local/bin/claude }
-      - { path: /usr/bin/node }
       - { path: /usr/local/bin/node }
 
   anthropic_api:
@@ -229,9 +216,7 @@ network_policies:
               method: GET
               path: "/**"
     binaries:
-      - { path: /usr/bin/claude }
       - { path: /usr/local/bin/claude }
-      - { path: /usr/bin/node }
       - { path: /usr/local/bin/node }
 
   claude_platform:
@@ -249,9 +234,7 @@ network_policies:
               method: POST
               path: "/**"
     binaries:
-      - { path: /usr/bin/claude }
       - { path: /usr/local/bin/claude }
-      - { path: /usr/bin/node }
       - { path: /usr/local/bin/node }
 
   claude_telemetry:
@@ -274,7 +257,144 @@ network_policies:
               method: POST
               path: "/**"
     binaries:
-      - { path: /usr/bin/claude }
       - { path: /usr/local/bin/claude }
-      - { path: /usr/bin/node }
       - { path: /usr/local/bin/node }
+
+  # opencode inference. Bound to the real opencode binary (a compiled release
+  # binary, not a node script). The LiteLLM host mirrors litellm_inference; the
+  # Anthropic rule serves --inference anthropic.
+  opencode_litellm:
+    name: opencode-litellm
+    endpoints:
+      - host: litellm.internal.keener.us
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        rules:
+          - allow:
+              method: POST
+              path: "/**"
+          - allow:
+              method: GET
+              path: "/**"
+    binaries:
+      - { path: /usr/local/bin/opencode }
+
+  opencode_anthropic:
+    name: opencode-anthropic
+    endpoints:
+      - host: api.anthropic.com
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        rules:
+          - allow:
+              method: POST
+              path: "/**"
+          - allow:
+              method: GET
+              path: "/**"
+    binaries:
+      - { path: /usr/local/bin/opencode }
+
+  # Bootstrap egress for `mise install`. ALWAYS present at sandbox create time
+  # and ALWAYS removed (policy update --remove-rule mise_bootstrap) before the
+  # agent starts. Bound only to mise; its children (curl, tar, uv, ...) match
+  # through the parent-process rule. Read-only methods (GET/HEAD/OPTIONS) only.
+  # Extra hosts come from --mise-allow-host host[:port].
+  mise_bootstrap:
+    name: mise-bootstrap
+    endpoints:
+      - host: github.com
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        rules:
+          - allow:
+              method: GET
+              path: "/*/*/releases/**"
+          - allow:
+              method: HEAD
+              path: "/*/*/releases/**"
+      - host: api.github.com
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        rules:
+          - allow:
+              method: GET
+              path: "/repos/*/*/releases"
+          - allow:
+              method: GET
+              path: "/repos/*/*/releases/**"
+          - allow:
+              method: GET
+              path: "/repos/*/*/tags"
+          - allow:
+              method: GET
+              path: "/repos/*/*/git/ref/tags/**"
+          - allow:
+              method: GET
+              path: "/repos/*/*/git/refs/tags/**"
+      - host: objects.githubusercontent.com
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-only
+      - host: release-assets.githubusercontent.com
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-only
+      - host: mise-versions.jdx.dev
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-only
+      - host: mise.jdx.dev
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-only
+      - host: pypi.org
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-only
+      - host: files.pythonhosted.org
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-only
+      - host: registry.npmjs.org
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        allow_encoded_slash: true
+        access: read-only
+      - host: dl.k8s.io
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-only
+      - host: cdn.dl.k8s.io
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-only
+      - host: get.helm.sh
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-only
+      - host: storage.googleapis.com
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-only
+      # Extra --mise-allow-host endpoints are expanded from the next line. It is a
+      # YAML comment in the raw template (so tests/images/smoke.sh can parse the
+      # file) and emits whole endpoints, each starting on a fresh line, at render time.
+      #{{range .MiseExtraHosts}}{{printf "\n      - host: %s\n        port: %d\n        protocol: rest\n        enforcement: enforce\n        access: read-only" .Host .Port}}{{end}}
+    binaries:
+      - { path: /usr/local/bin/mise }

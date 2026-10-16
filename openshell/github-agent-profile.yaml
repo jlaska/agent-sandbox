@@ -87,10 +87,9 @@ endpoints:
           method: POST
           path: /**/git-receive-pack
 
+# Real paths in the agent-* images; see openshell/images/*/binaries.txt.
 binaries:
-  - /usr/bin/gh
   - /usr/local/bin/gh
   - /usr/bin/git
-  - /usr/local/bin/git
   - /usr/lib/git-core/git-remote-http
 inference_capable: false

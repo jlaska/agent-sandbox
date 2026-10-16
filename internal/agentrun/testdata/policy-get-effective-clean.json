@@ -1,0 +1,17 @@
+{
+  "scope": "sandbox",
+  "sandbox": "a-claude-123",
+  "version": 3,
+  "active_version": 3,
+  "hash": "abc123",
+  "status": "effective",
+  "config_revision": 7,
+  "policy_source": "sandbox",
+  "policy": {
+    "version": 1,
+    "network_policies": {
+      "github_git": {"name": "github-git", "binaries": [{"path": "/usr/bin/git"}]},
+      "_provider_github-agent": {"name": "_provider_github-agent"}
+    }
+  }
+}

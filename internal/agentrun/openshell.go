@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/jlaska/agent-sandbox/openshell"
 )
 
@@ -118,9 +120,9 @@ func ensureProfile(id string) error {
 	if profileInstalled(id) {
 		return nil
 	}
-	data, err := openshell.ProviderProfiles.ReadFile(path)
+	data, err := profileData(id, path)
 	if err != nil {
-		return fmt.Errorf("failed to read embedded profile %s: %w", id, err)
+		return err
 	}
 	tmp, err := os.CreateTemp("", "agent-run-profile-*.yaml")
 	if err != nil {
@@ -142,9 +144,9 @@ func ensureProfile(id string) error {
 }
 
 // ensureProfiles imports every profile the run needs (github-agent plus the
-// harness's own).
-func ensureProfiles(h *Harness) error {
-	for _, id := range append([]string{GitHubProviderName}, h.Providers()...) {
+// harness's own, as resolved for this run by Harness.ProvidersFor).
+func ensureProfiles(harnessProfiles []string) error {
+	for _, id := range append([]string{GitHubProviderName}, harnessProfiles...) {
 		if err := ensureProfile(id); err != nil {
 			return err
 		}
@@ -192,4 +194,51 @@ func allowDriverConfigHint(driver string) string {
 		return "[openshell.drivers.<driver>] allow_driver_config = true"
 	}
 	return fmt.Sprintf("[openshell.drivers.%s] allow_driver_config = true", driver)
+}
+
+// profileBinaries overrides the `binaries` list of vendored upstream profiles.
+// Upstream's examples name generic paths (anthropic.yaml allows only curl) and
+// say to edit `binaries` for your own image; the vendored files stay
+// byte-identical to upstream, so the paths our images provide are set here at
+// import time. Every path must appear in some openshell/images/*/binaries.txt.
+var profileBinaries = map[string][]string{
+	"anthropic":   {"/usr/bin/curl", "/usr/local/bin/opencode"},
+	"claude-code": {"/usr/local/bin/claude"},
+}
+
+// profileData returns the embedded profile, with its binaries replaced when
+// profileBinaries has an entry for id.
+func profileData(id, path string) ([]byte, error) {
+	data, err := openshell.ProviderProfiles.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read embedded profile %s: %w", id, err)
+	}
+	bins, ok := profileBinaries[id]
+	if !ok {
+		return data, nil
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil || len(doc.Content) == 0 {
+		return nil, fmt.Errorf("failed to parse embedded profile %s: %v", id, err)
+	}
+	root := doc.Content[0]
+	seq := &yaml.Node{Kind: yaml.SequenceNode}
+	for _, b := range bins {
+		seq.Content = append(seq.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: b})
+	}
+	replaced := false
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		if root.Content[i].Value == "binaries" {
+			root.Content[i+1] = seq
+			replaced = true
+		}
+	}
+	if !replaced {
+		root.Content = append(root.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: "binaries"}, seq)
+	}
+	out, err := yaml.Marshal(&doc)
+	if err != nil {
+		return nil, fmt.Errorf("failed to render profile %s: %w", id, err)
+	}
+	return out, nil
 }

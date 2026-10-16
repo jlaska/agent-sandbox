@@ -270,16 +270,19 @@ func TestConfigValidate(t *testing.T) {
 
 func TestParseArgsNewFlags(t *testing.T) {
 	base := []string{"jlaska/agent-sandbox", "claude"}
+	ocBase := []string{"jlaska/agent-sandbox", "opencode"}
+	t.Setenv("ANTHROPIC_API_KEY", "sk-test")
+	t.Setenv("LITELLM_API_KEY", "sk-lite")
 
 	t.Run("all flags", func(t *testing.T) {
-		cfg, err := ParseArgs(append(base,
-			"--image", "agent-claude:local", "--no-mise", "--fresh-cache", "--no-cache",
+		cfg, err := ParseArgs(append(append([]string{}, ocBase...),
+			"--image", "agent-opencode:local", "--no-mise", "--fresh-cache",
 			"--mise-allow-host", "example.com", "--mise-allow-host", "dl.example.org:8443",
 			"--inference", "anthropic", "--driver", "podman"))
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if cfg.Image != "agent-claude:local" || !cfg.NoMise || !cfg.FreshCache || !cfg.NoCache ||
+		if cfg.Image != "agent-opencode:local" || !cfg.NoMise || !cfg.FreshCache ||
 			cfg.Inference != "anthropic" || cfg.Driver != "podman" {
 			t.Errorf("unexpected config: %+v", cfg)
 		}
@@ -304,22 +307,24 @@ func TestParseArgsNewFlags(t *testing.T) {
 		}
 	}
 	for _, i := range []string{"litellm", "anthropic"} {
-		if _, err := ParseArgs(append(base, "--inference", i)); err != nil {
+		if _, err := ParseArgs(append(append([]string{}, ocBase...), "--inference", i)); err != nil {
 			t.Errorf("--inference %s rejected: %v", i, err)
 		}
 	}
 
 	bad := map[string][]string{
-		"bad driver":       {"--driver", "lxc"},
-		"bad inference":    {"--inference", "openai"},
-		"host with scheme": {"--mise-allow-host", "https://example.com"},
-		"host with path":   {"--mise-allow-host", "example.com/x"},
-		"host wildcard":    {"--mise-allow-host", "*.example.com"},
-		"host bad port":    {"--mise-allow-host", "example.com:99999"},
-		"host zero port":   {"--mise-allow-host", "example.com:0"},
-		"host non-numeric": {"--mise-allow-host", "example.com:http"},
-		"host empty":       {"--mise-allow-host", ""},
-		"image whitespace": {"--image", "a b"},
+		"bad driver":          {"--driver", "lxc"},
+		"bad inference":       {"--inference", "openai"},
+		"host with scheme":    {"--mise-allow-host", "https://example.com"},
+		"host with path":      {"--mise-allow-host", "example.com/x"},
+		"host wildcard":       {"--mise-allow-host", "*.example.com"},
+		"host bad port":       {"--mise-allow-host", "example.com:99999"},
+		"host zero port":      {"--mise-allow-host", "example.com:0"},
+		"host non-numeric":    {"--mise-allow-host", "example.com:http"},
+		"host empty":          {"--mise-allow-host", ""},
+		"image whitespace":    {"--image", "a b"},
+		"inference on claude": {"--inference", "anthropic"},
+		"fresh with no-cache": {"--fresh-cache", "--no-cache"},
 	}
 	for name, extra := range bad {
 		t.Run(name, func(t *testing.T) {
@@ -333,6 +338,27 @@ func TestParseArgsNewFlags(t *testing.T) {
 func TestShellHarnessRejected(t *testing.T) {
 	_, err := ParseArgs([]string{"jlaska/agent-sandbox", "shell"})
 	if err == nil || !strings.Contains(err.Error(), "shell harness was removed") {
+		t.Errorf("err = %v", err)
+	}
+}
+
+func TestParseArgsOpencodeBackendValidatedEarly(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("LITELLM_API_KEY", "")
+	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "")
+	if _, err := ParseArgs([]string{"jlaska/agent-sandbox", "opencode"}); err == nil {
+		t.Error("opencode with no credentials must fail before any sandbox exists")
+	}
+	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "oauth")
+	if _, err := ParseArgs([]string{"jlaska/agent-sandbox", "opencode"}); err == nil || !strings.Contains(err.Error(), "OAUTH") {
+		t.Errorf("oauth-only err = %v", err)
+	}
+	t.Setenv("ANTHROPIC_API_KEY", "k")
+	if _, err := ParseArgs([]string{"jlaska/agent-sandbox", "opencode"}); err != nil {
+		t.Errorf("anthropic key should suffice: %v", err)
+	}
+	if _, err := ParseArgs([]string{"jlaska/agent-sandbox", "claude", "--inference", "litellm"}); err == nil ||
+		!strings.Contains(err.Error(), "opencode harness only") {
 		t.Errorf("err = %v", err)
 	}
 }
