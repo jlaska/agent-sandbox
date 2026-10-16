@@ -57,9 +57,26 @@ Building images locally also requires Podman.
    curl -LsSf https://raw.githubusercontent.com/NVIDIA/OpenShell/main/install.sh | OPENSHELL_VERSION=v0.1.4 sh
    ```
 
-3. To use the toolchain cache, enable `allow_driver_config` for your compute
-   driver (see [Toolchain cache](#toolchain-cache)), then recreate the gateway.
-4. Recreate sandboxes. `agent-run` always creates a fresh sandbox per run.
+   On macOS this installs NVIDIA's `nvidia/openshell` Homebrew formula, which
+   runs the gateway as a `brew services` launchd service. Do not
+   `brew upgrade` into Homebrew-core's `openshell` formula: it ships only the
+   binaries, so the old 0.0.x gateway keeps running, and once stopped nothing
+   starts a new one.
+3. Migrate `~/.config/openshell/gateway.toml` to schema version 2. The 0.1.x
+   gateway refuses the old format (`category=missing_version`), and this file
+   overrides the formula's default. At minimum: add `[openshell] version = 2`,
+   and replace `compute_drivers = ["podman"]` with
+   `compute_driver = "podman"`. See the upstream
+   [migration guide](https://docs.nvidia.com/openshell/latest/how-it-works/gateways/configuration#migrate-to-schema-version-2).
+   Check the result with `openshell-gateway config preflight`.
+4. Set aside the 0.0.x gateway state. 0.1.x cannot use it, and
+   `openshell gateway destroy` no longer exists:
+   `mv ~/.local/state/openshell/gateway ~/.local/state/openshell/gateway.bak`.
+5. To use the toolchain cache, enable `allow_driver_config` for your compute
+   driver (see [Toolchain cache](#toolchain-cache)). Then restart the gateway
+   (`brew services restart nvidia/openshell/openshell` on macOS) and confirm
+   that `openshell gateway info` reports the new version.
+6. Recreate sandboxes. `agent-run` always creates a fresh sandbox per run.
 
 OpenShell 0.1.4 ships no built-in provider profiles, so `provider create` fails
 until the profile is imported. You do not need to do this by hand: `agent-run`
@@ -303,7 +320,13 @@ Mounting needs the gateway to allow caller-supplied driver config. Set this in
 the gateway config for your driver, then recreate the gateway:
 
 ```toml
-[openshell.drivers.podman]   # or docker / kubernetes
+[openshell]
+version = 2
+
+[openshell.gateway]
+compute_driver = "podman"    # or docker / kubernetes
+
+[openshell.drivers.podman]   # same driver name as above
 allow_driver_config = true
 ```
 
