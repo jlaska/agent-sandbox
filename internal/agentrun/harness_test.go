@@ -16,6 +16,7 @@ func TestLookupHarness(t *testing.T) {
 	}{
 		{"claude", "claude", "", "claude"},
 		{"pi", "pi", "", "pi"},
+		{"opencode", "opencode", "", "opencode"},
 		{"shell removed", "shell", "shell harness was removed", ""},
 		{"unknown", "nope", `unknown harness "nope"`, ""},
 	}
@@ -39,7 +40,7 @@ func TestLookupHarness(t *testing.T) {
 }
 
 func TestHarnessRegistry(t *testing.T) {
-	if got := strings.Join(HarnessNames(), ","); got != "claude,pi" {
+	if got := strings.Join(HarnessNames(), ","); got != "claude,opencode,pi" {
 		t.Errorf("HarnessNames() = %q", got)
 	}
 	for _, name := range HarnessNames() {

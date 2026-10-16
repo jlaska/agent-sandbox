@@ -18,6 +18,11 @@ var inferenceCredentialVars = map[string][]string{
 	HarnessPi: {
 		"LITELLM_API_KEY",
 	},
+	HarnessOpencode: {
+		"LITELLM_API_KEY",
+		"ANTHROPIC_API_KEY",
+		"CLAUDE_CODE_OAUTH_TOKEN",
+	},
 }
 
 var inferenceConfigVars = map[string][]string{
@@ -32,6 +37,9 @@ var inferenceConfigVars = map[string][]string{
 	HarnessPi: {
 		"LITELLM_BASE_URL",
 		"ANTHROPIC_BASE_URL",
+	},
+	HarnessOpencode: {
+		"LITELLM_BASE_URL",
 	},
 }
 
@@ -90,6 +98,12 @@ func resolveCredential(key string, explicitEnv []string) string {
 // createInferenceProviders creates the OpenShell providers needed for the
 // harness to reach its inference endpoint, with credentials injected securely.
 func createInferenceProviders(harness string, explicitEnv []string) (providerFlags []string, providerNames []string, err error) {
+	return createInferenceProvidersFor(harness, "", explicitEnv)
+}
+
+// createInferenceProvidersFor is createInferenceProviders with the --inference
+// backend (opencode only; "" selects the default).
+func createInferenceProvidersFor(harness, inference string, explicitEnv []string) (providerFlags []string, providerNames []string, err error) {
 	var flags []string
 	var names []string
 
@@ -123,20 +137,52 @@ func createInferenceProviders(harness string, explicitEnv []string) (providerFla
 		if apiKey == "" {
 			return nil, nil, fmt.Errorf("LITELLM_API_KEY is required for Pi harness, set it in your environment or pass --env LITELLM_API_KEY=<key>")
 		}
+		if err := createLiteLLMProvider(apiKey); err != nil {
+			return nil, nil, err
+		}
+		flags = append(flags, "--provider", "litellm-inference")
+		names = append(names, "litellm-inference")
 
-		name := "litellm-inference"
+	case HarnessOpencode:
+		backend, err := resolveOpencodeBackend(inference, explicitEnv)
+		if err != nil {
+			return nil, nil, err
+		}
+		if backend == inferenceLiteLLM {
+			if err := createLiteLLMProvider(resolveCredential("LITELLM_API_KEY", explicitEnv)); err != nil {
+				return nil, nil, err
+			}
+			flags = append(flags, "--provider", "litellm-inference")
+			names = append(names, "litellm-inference")
+			break
+		}
+		name := "anthropic"
 		_ = execCmdSilent("openshell", "provider", "delete", name)
 		if err := execCmd("openshell", "provider", "create",
 			"--name", name,
-			"--type", "litellm-inference",
-			"--credential", fmt.Sprintf("litellm_api_key=%s", apiKey),
-			"--credential", "litellm_bearer_token=unused",
+			"--type", "anthropic",
+			"--credential", fmt.Sprintf("api_key=%s", resolveCredential("ANTHROPIC_API_KEY", explicitEnv)),
 		); err != nil {
-			return nil, nil, fmt.Errorf("failed to create litellm-inference provider: %w", err)
+			return nil, nil, fmt.Errorf("failed to create anthropic provider: %w", err)
 		}
 		flags = append(flags, "--provider", name)
 		names = append(names, name)
 	}
 
 	return flags, names, nil
+}
+
+// createLiteLLMProvider (re)creates the litellm-inference provider.
+func createLiteLLMProvider(apiKey string) error {
+	name := "litellm-inference"
+	_ = execCmdSilent("openshell", "provider", "delete", name)
+	if err := execCmd("openshell", "provider", "create",
+		"--name", name,
+		"--type", "litellm-inference",
+		"--credential", fmt.Sprintf("litellm_api_key=%s", apiKey),
+		"--credential", "litellm_bearer_token=unused",
+	); err != nil {
+		return fmt.Errorf("failed to create litellm-inference provider: %w", err)
+	}
+	return nil
 }

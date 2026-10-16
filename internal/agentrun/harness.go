@@ -1,6 +1,7 @@
 package agentrun
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -10,7 +11,21 @@ import (
 const (
 	HarnessClaude = "claude"
 	HarnessPi     = "pi"
+	// HarnessOpencode is the opencode CLI (github.com/anomalyco/opencode).
+	HarnessOpencode = "opencode"
 )
+
+// HarnessOptions carries per-run settings that some harnesses need when
+// choosing providers, init hooks and preseed config (currently only opencode,
+// whose inference backend is selectable).
+type HarnessOptions struct {
+	// Inference is the --inference value ("litellm", "anthropic" or "").
+	Inference string
+	// Model is the --model value, used to declare the model for LiteLLM.
+	Model string
+	// ExplicitEnv is the --env KEY=VALUE list (credential/config lookups).
+	ExplicitEnv []string
+}
 
 // Harness describes one agent CLI that agent-run can launch in a sandbox.
 type Harness struct {
@@ -28,6 +43,36 @@ type Harness struct {
 	profiles []string
 	initHook func(sandboxName string) error
 	preseed  func(sandboxName string) error
+
+	// Optional option-aware variants; when set they take precedence over the
+	// plain forms above via ProvidersFor / InitHookFor / PreseedFor.
+	profilesFor func(HarnessOptions) ([]string, error)
+	initHookFor func(sandboxName string, o HarnessOptions) error
+	preseedFor  func(sandboxName string, o HarnessOptions) error
+}
+
+// ProvidersFor is Providers narrowed to the backend selected by o.
+func (h *Harness) ProvidersFor(o HarnessOptions) ([]string, error) {
+	if h.profilesFor != nil {
+		return h.profilesFor(o)
+	}
+	return h.profiles, nil
+}
+
+// InitHookFor is InitHook for the backend selected by o.
+func (h *Harness) InitHookFor(o HarnessOptions) func(sandboxName string) error {
+	if h.initHookFor != nil {
+		return func(sb string) error { return h.initHookFor(sb, o) }
+	}
+	return h.InitHook()
+}
+
+// PreseedFor is Preseed for the backend selected by o.
+func (h *Harness) PreseedFor(o HarnessOptions) func(sandboxName string) error {
+	if h.preseedFor != nil {
+		return func(sb string) error { return h.preseedFor(sb, o) }
+	}
+	return h.Preseed()
 }
 
 // Providers returns the provider profile ids that must exist on the gateway
@@ -74,6 +119,162 @@ var harnesses = map[string]*Harness{
 		profiles:  []string{"litellm-inference"},
 		initHook:  piInitHook,
 	},
+	// opencode 1.19.3: both the default TUI command (`opencode --help`, pinned
+	// image) and `opencode run` (packages/opencode/src/cli/cmd/run.ts,
+	// alias ["m"]) accept -m/--model in provider/model form.
+	HarnessOpencode: {
+		Name:        HarnessOpencode,
+		Command:     "opencode",
+		ModelFlag:   "--model",
+		ImageKey:    "opencode",
+		profiles:    []string{"anthropic", "litellm-inference"},
+		profilesFor: opencodeProfiles,
+		initHook:    func(sb string) error { return opencodeInitHook(sb, HarnessOptions{}) },
+		initHookFor: opencodeInitHook,
+		preseed:     func(sb string) error { return opencodePreseed(sb, HarnessOptions{}) },
+		preseedFor:  opencodePreseed,
+	},
+}
+
+// Backend names for opencode (--inference values).
+const (
+	inferenceLiteLLM   = "litellm"
+	inferenceAnthropic = "anthropic"
+)
+
+// resolveOpencodeBackend picks the opencode inference backend. An explicit
+// --inference wins; otherwise LiteLLM is used if LITELLM_API_KEY resolves,
+// else Anthropic if ANTHROPIC_API_KEY resolves. opencode needs an API key, so
+// a Pro/Max CLAUDE_CODE_OAUTH_TOKEN alone is rejected with a specific error.
+func resolveOpencodeBackend(inference string, env []string) (string, error) {
+	hasLiteLLM := resolveCredential("LITELLM_API_KEY", env) != ""
+	hasAnthropic := resolveCredential("ANTHROPIC_API_KEY", env) != ""
+	hasOAuth := resolveCredential("CLAUDE_CODE_OAUTH_TOKEN", env) != ""
+	oauthErr := fmt.Errorf("opencode needs an API key: CLAUDE_CODE_OAUTH_TOKEN (Claude Pro/Max OAuth) is not usable with third-party tools; set ANTHROPIC_API_KEY or LITELLM_API_KEY")
+
+	switch inference {
+	case inferenceLiteLLM:
+		if !hasLiteLLM {
+			return "", fmt.Errorf("--inference litellm requires LITELLM_API_KEY, set it in your environment or pass --env LITELLM_API_KEY=<key>")
+		}
+		return inferenceLiteLLM, nil
+	case inferenceAnthropic:
+		if !hasAnthropic {
+			if hasOAuth {
+				return "", oauthErr
+			}
+			return "", fmt.Errorf("--inference anthropic requires ANTHROPIC_API_KEY, set it in your environment or pass --env ANTHROPIC_API_KEY=<key>")
+		}
+		return inferenceAnthropic, nil
+	case "":
+	default:
+		return "", fmt.Errorf("invalid --inference %q; supported: %s, %s", inference, inferenceLiteLLM, inferenceAnthropic)
+	}
+
+	switch {
+	case hasLiteLLM:
+		return inferenceLiteLLM, nil
+	case hasAnthropic:
+		return inferenceAnthropic, nil
+	case hasOAuth:
+		return "", oauthErr
+	}
+	return "", fmt.Errorf("opencode needs an inference API key: set LITELLM_API_KEY (litellm backend) or ANTHROPIC_API_KEY (anthropic backend)")
+}
+
+func opencodeProfiles(o HarnessOptions) ([]string, error) {
+	backend, err := resolveOpencodeBackend(o.Inference, o.ExplicitEnv)
+	if err != nil {
+		return nil, err
+	}
+	if backend == inferenceLiteLLM {
+		return []string{"litellm-inference"}, nil
+	}
+	return []string{"anthropic"}, nil
+}
+
+// opencodeInitHook maps the provider-injected credential to the env var
+// opencode reads: ANTHROPIC_API_KEY for its built-in anthropic provider,
+// LITELLM_API_KEY referenced from the preseeded config via {env:...}.
+func opencodeInitHook(sandboxName string, o HarnessOptions) error {
+	backend, err := resolveOpencodeBackend(o.Inference, o.ExplicitEnv)
+	if err != nil {
+		return err
+	}
+	if backend == inferenceLiteLLM {
+		return piInitHook(sandboxName)
+	}
+	return execCmd("openshell", "sandbox", "exec", "-n", sandboxName, "--", "sh", "-c",
+		`echo 'export ANTHROPIC_API_KEY="$api_key"' >> ~/.bashrc
+			 echo 'export ANTHROPIC_API_KEY="$api_key"' >> ~/.profile`)
+}
+
+// opencodeConfigPath is the global config the image already seeds with
+// autoupdate=false (openshell/images/opencode/Dockerfile).
+const opencodeConfigPath = "~/.config/opencode/opencode.json"
+
+// opencodeConfig renders ~/.config/opencode/opencode.json for a backend. It
+// is a superset of the image-baked file ($schema + autoupdate=false) so the
+// preseed never drops those keys. Keys (v1.19.3, packages/core/src/v1/config):
+// config.ts "share" (manual|auto|disabled), "autoupdate", "enabled_providers";
+// provider.ts "npm", "name", "options.{baseURL,apiKey}", "models".
+func opencodeConfig(backend, liteLLMBaseURL, model string) ([]byte, error) {
+	cfg := map[string]any{
+		"$schema":    "https://opencode.ai/config.json",
+		"autoupdate": false,
+		"share":      "disabled",
+	}
+	switch backend {
+	case inferenceAnthropic:
+		cfg["enabled_providers"] = []string{"anthropic"}
+		cfg["provider"] = map[string]any{
+			"anthropic": map[string]any{
+				"options": map[string]any{"apiKey": "{env:ANTHROPIC_API_KEY}"},
+			},
+		}
+	case inferenceLiteLLM:
+		models := map[string]any{}
+		if id, ok := strings.CutPrefix(model, "litellm/"); ok && id != "" {
+			models[id] = map[string]any{"name": id}
+		}
+		cfg["enabled_providers"] = []string{"litellm"}
+		cfg["provider"] = map[string]any{
+			"litellm": map[string]any{
+				"npm":  "@ai-sdk/openai-compatible",
+				"name": "LiteLLM",
+				"options": map[string]any{
+					"baseURL": strings.TrimRight(liteLLMBaseURL, "/"),
+					"apiKey":  "{env:LITELLM_API_KEY}",
+				},
+				"models": models,
+			},
+		}
+	default:
+		return nil, fmt.Errorf("unknown opencode backend %q", backend)
+	}
+	b, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return append(b, '\n'), nil
+}
+
+// opencodePreseed writes the global opencode config for the selected backend.
+func opencodePreseed(sandboxName string, o HarnessOptions) error {
+	backend, err := resolveOpencodeBackend(o.Inference, o.ExplicitEnv)
+	if err != nil {
+		return err
+	}
+	baseURL := resolveCredential("LITELLM_BASE_URL", o.ExplicitEnv)
+	if backend == inferenceLiteLLM && baseURL == "" {
+		return fmt.Errorf("LITELLM_BASE_URL is required for the opencode litellm backend, set it in your environment or pass --env LITELLM_BASE_URL=<url>")
+	}
+	cfg, err := opencodeConfig(backend, baseURL, o.Model)
+	if err != nil {
+		return err
+	}
+	return execCmd("openshell", "sandbox", "exec", "-n", sandboxName, "--", "sh", "-c",
+		"mkdir -p ~/.config/opencode && cat > "+opencodeConfigPath+" << 'PRESEED'\n"+string(cfg)+"PRESEED")
 }
 
 // LookupHarness returns the registered harness with the given name.
