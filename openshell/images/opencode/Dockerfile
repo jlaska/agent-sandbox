@@ -30,7 +30,7 @@ RUN set -eux; \
       *) echo "unsupported arch $arch" >&2; exit 1 ;; \
     esac; \
     f="opencode-linux-${oarch}.tar.gz"; \
-    curl -fsSLO "https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}/${f}"; \
+    curl -fsSLO --retry 5 --retry-all-errors "https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}/${f}"; \
     echo "${sha}  ${f}" | sha256sum -c -; \
     tar -xzf "$f" opencode; \
     install -m 0755 opencode /usr/local/bin/opencode; \

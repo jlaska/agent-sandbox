@@ -19,7 +19,7 @@ USER 0
 # at a stable path so OpenShell's real-path binary matching works.
 RUN set -eux; \
     export HOME=/tmp/claude-home; mkdir -p "$HOME"; \
-    curl -fsSL https://claude.ai/install.sh | bash -s "${CLAUDE_VERSION}"; \
+    curl -fsSL --retry 5 --retry-all-errors https://claude.ai/install.sh | bash -s "${CLAUDE_VERSION}"; \
     install -m 0755 "$(readlink -f "$HOME/.local/bin/claude")" /usr/local/bin/claude; \
     rm -rf "$HOME"; \
     /usr/local/bin/claude --version

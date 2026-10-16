@@ -42,8 +42,8 @@ RUN set -eux; \
     arch="$(dpkg --print-architecture)"; \
     case "$arch" in amd64) narch=x64 ;; arm64) narch=arm64 ;; *) echo "unsupported arch $arch" >&2; exit 1 ;; esac; \
     f="node-v${NODE_VERSION}-linux-${narch}.tar.xz"; \
-    curl -fsSLO "https://nodejs.org/dist/v${NODE_VERSION}/${f}"; \
-    curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/SHASUMS256.txt" | grep " ${f}\$" | sha256sum -c -; \
+    curl -fsSLO --retry 5 --retry-all-errors "https://nodejs.org/dist/v${NODE_VERSION}/${f}"; \
+    curl -fsSL --retry 5 --retry-all-errors "https://nodejs.org/dist/v${NODE_VERSION}/SHASUMS256.txt" | grep " ${f}\$" | sha256sum -c -; \
     tar -xJf "$f" -C /usr/local --strip-components=1 --exclude='*.md' --exclude=LICENSE --exclude=CHANGELOG.md; \
     rm -f "$f" /usr/local/share/doc/node/* 2>/dev/null || true; \
     node --version
@@ -55,8 +55,8 @@ RUN set -eux; \
     arch="$(dpkg --print-architecture)"; \
     case "$arch" in amd64) march=x64 ;; arm64) march=arm64 ;; *) echo "unsupported arch $arch" >&2; exit 1 ;; esac; \
     f="mise-v${MISE_VERSION}-linux-${march}"; \
-    curl -fsSLO "https://github.com/jdx/mise/releases/download/v${MISE_VERSION}/${f}"; \
-    curl -fsSL "https://github.com/jdx/mise/releases/download/v${MISE_VERSION}/SHASUMS256.txt" | grep " \./${f}\$" | sed 's# \./# #' | sha256sum -c -; \
+    curl -fsSLO --retry 5 --retry-all-errors "https://github.com/jdx/mise/releases/download/v${MISE_VERSION}/${f}"; \
+    curl -fsSL --retry 5 --retry-all-errors "https://github.com/jdx/mise/releases/download/v${MISE_VERSION}/SHASUMS256.txt" | grep " \./${f}\$" | sed 's# \./# #' | sha256sum -c -; \
     install -m 0755 "$f" /usr/local/bin/mise; \
     rm -f "$f"; \
     mise --version
@@ -68,8 +68,8 @@ RUN set -eux; \
     arch="$(dpkg --print-architecture)"; \
     case "$arch" in amd64) uarch=x86_64 ;; arm64) uarch=aarch64 ;; *) echo "unsupported arch $arch" >&2; exit 1 ;; esac; \
     f="uv-${uarch}-unknown-linux-gnu.tar.gz"; \
-    curl -fsSLO "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/${f}"; \
-    curl -fsSLO "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/${f}.sha256"; \
+    curl -fsSLO --retry 5 --retry-all-errors "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/${f}"; \
+    curl -fsSLO --retry 5 --retry-all-errors "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/${f}.sha256"; \
     sha256sum -c "${f}.sha256"; \
     tar -xzf "$f"; \
     install -m 0755 "uv-${uarch}-unknown-linux-gnu/uv" /usr/local/bin/uv; \
@@ -83,8 +83,8 @@ ARG GH_VERSION=2.102.0
 RUN set -eux; \
     arch="$(dpkg --print-architecture)"; \
     f="gh_${GH_VERSION}_linux_${arch}.tar.gz"; \
-    curl -fsSLO "https://github.com/cli/cli/releases/download/v${GH_VERSION}/${f}"; \
-    curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_checksums.txt" | grep " ${f}\$" | sha256sum -c -; \
+    curl -fsSLO --retry 5 --retry-all-errors "https://github.com/cli/cli/releases/download/v${GH_VERSION}/${f}"; \
+    curl -fsSL --retry 5 --retry-all-errors "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_checksums.txt" | grep " ${f}\$" | sha256sum -c -; \
     tar -xzf "$f"; \
     install -m 0755 "gh_${GH_VERSION}_linux_${arch}/bin/gh" /usr/local/bin/gh; \
     rm -rf "$f" "gh_${GH_VERSION}_linux_${arch}"; \
