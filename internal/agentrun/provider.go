@@ -3,7 +3,6 @@ package agentrun
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 )
 
@@ -120,10 +119,6 @@ func createInferenceProviders(harness string, explicitEnv []string) (providerFla
 		names = append(names, name)
 
 	case HarnessPi:
-		if err := ensureLiteLLMProvider(); err != nil {
-			return nil, nil, err
-		}
-
 		apiKey := resolveCredential("LITELLM_API_KEY", explicitEnv)
 		if apiKey == "" {
 			return nil, nil, fmt.Errorf("LITELLM_API_KEY is required for Pi harness, set it in your environment or pass --env LITELLM_API_KEY=<key>")
@@ -144,42 +139,4 @@ func createInferenceProviders(harness string, explicitEnv []string) (providerFla
 	}
 
 	return flags, names, nil
-}
-
-// runSandboxInitHook runs harness-specific initialization inside the sandbox
-// to map provider-injected credentials to the env vars the harness expects.
-func runSandboxInitHook(harness, sandboxName string) error {
-	switch harness {
-	case HarnessClaude:
-		// Map the claude-code provider credential to the env vars Claude expects.
-		oauthToken := resolveCredential("CLAUDE_CODE_OAUTH_TOKEN", nil)
-		if oauthToken != "" {
-			return execCmd("openshell", "sandbox", "exec", "-n", sandboxName, "--", "sh", "-c",
-				`echo 'export CLAUDE_CODE_OAUTH_TOKEN="$api_key"' >> ~/.bashrc
-				 echo 'export CLAUDE_CODE_OAUTH_TOKEN="$api_key"' >> ~/.profile`)
-		}
-		return execCmd("openshell", "sandbox", "exec", "-n", sandboxName, "--", "sh", "-c",
-			`echo 'export ANTHROPIC_API_KEY="$api_key"' >> ~/.bashrc
-			 echo 'export ANTHROPIC_API_KEY="$api_key"' >> ~/.profile`)
-
-	case HarnessPi:
-		return execCmd("openshell", "sandbox", "exec", "-n", sandboxName, "--", "sh", "-c",
-			`echo 'export LITELLM_API_KEY="$litellm_api_key"' >> ~/.bashrc
-			 echo 'export LITELLM_API_KEY="$litellm_api_key"' >> ~/.profile`)
-	}
-	return nil
-}
-
-// ensureLiteLLMProvider imports the litellm-inference profile if not present.
-func ensureLiteLLMProvider() error {
-	out, _ := execCmdOutput("openshell", "provider", "list-profiles")
-	if strings.Contains(out, "litellm-inference") {
-		return nil
-	}
-	repoRoot := findRepoRoot()
-	profilePath := filepath.Join(repoRoot, "openshell", "litellm-inference-profile.yaml")
-	if err := execCmd("openshell", "provider", "profile", "import", "--file", profilePath); err != nil {
-		return fmt.Errorf("failed to import litellm-inference provider profile: %w", err)
-	}
-	return nil
 }

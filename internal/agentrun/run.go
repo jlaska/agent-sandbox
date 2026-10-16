@@ -30,7 +30,7 @@ func Run(cfg *Config) error {
 	}
 
 	if cfg.Diag {
-		return printDiagnostics()
+		return printDiagnostics(cfg)
 	}
 
 	if cfg.RevokeToken != "" {
@@ -106,13 +106,30 @@ func Run(cfg *Config) error {
 	sandboxName = fmt.Sprintf("a-%s-%d", cfg.Harness, time.Now().Unix()%1000000)
 	fmt.Printf("[agent-run] Sandbox:    %s\n", sandboxName)
 
-	// Step 1: Verify OpenShell gateway
+	// Step 1: Require a supported OpenShell CLI, then verify the gateway
+	fmt.Println("[agent-run] Checking OpenShell version...")
+	osVersion, err := checkOpenShellVersion()
+	if err != nil {
+		return err
+	}
+	fmt.Printf("[agent-run] OpenShell:  %s (>= %s)\n", osVersion, MinOpenShellVersion)
 	fmt.Println("[agent-run] Checking OpenShell gateway...")
 	if err := execCmdSilent("openshell", "status"); err != nil {
 		return fmt.Errorf("OpenShell gateway is not running")
 	}
 
-	// Step 2: Resolve GitHub credentials
+	// Step 2: Resolve harness + image (images.yaml or --image)
+	harness, err := LookupHarness(cfg.Harness)
+	if err != nil {
+		return err
+	}
+	image, err := resolveImage(harness, cfg.Image)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("[agent-run] Image:      %s\n", image)
+
+	// Resolve GitHub credentials
 	fmt.Printf("[agent-run] Resolving GitHub credentials...\n")
 	cred, err := ResolveGitHubCredential(cfg)
 	if err != nil {
@@ -137,7 +154,13 @@ func Run(cfg *Config) error {
 		}
 	}
 
-	// Step 3: Create GitHub provider
+	// Step 3: Ensure provider profiles are imported (0.1.4 has no built-ins)
+	fmt.Println("[agent-run] Ensuring provider profiles...")
+	if err := ensureProfiles(harness); err != nil {
+		return err
+	}
+
+	// Step 4: Create providers (GitHub + inference)
 	fmt.Println("[agent-run] Creating GitHub provider...")
 	_ = execCmd("openshell", "provider", "delete", GitHubProviderName)
 	if err := execCmd("openshell", "provider", "create",
@@ -149,20 +172,19 @@ func Run(cfg *Config) error {
 	}
 	providersCreated = append(providersCreated, GitHubProviderName)
 
-	// Step 4: Create inference providers (credentials injected securely via provider)
 	inferenceFlags, inferenceProviders, err := createInferenceProviders(cfg.Harness, cfg.EnvVars)
 	if err != nil {
 		return fmt.Errorf("failed to create inference providers: %w", err)
 	}
 	providersCreated = append(providersCreated, inferenceProviders...)
 
-	// Step 5: Resolve inference env vars
+	// Resolve inference env vars
 	envFlags := resolveInferenceEnv(cfg.Harness, cfg.EnvVars)
 	if len(envFlags) > 0 {
 		fmt.Printf("[agent-run] Forwarding %d inference env var(s) to sandbox.\n", len(envFlags)/2)
 	}
 
-	// Step 6: Generate repo-specific policy
+	// Step 5: Generate repo-specific policy
 	fmt.Printf("[agent-run] Generating sandbox policy for %s...\n", cfg.Repo)
 	policyTmp, err := GeneratePolicy(cfg.Repo, repoRoot)
 	if err != nil {
@@ -170,18 +192,16 @@ func Run(cfg *Config) error {
 	}
 	defer func() { _ = os.Remove(policyTmp) }()
 
-	// Step 7: Create sandbox
-	fmt.Printf("[agent-run] Creating sandbox '%s'...\n", sandboxName)
-	createArgs := []string{
-		"sandbox", "create",
-		"--name", sandboxName,
-		"--provider", GitHubProviderName,
+	// Step 6: Prepare the mise cache (WP4b seam; no-op until implemented)
+	driver := detectDriver(cfg.Driver)
+	driverConfigJSON, err := prepareCache(cfg, driver)
+	if err != nil {
+		return err
 	}
-	createArgs = append(createArgs, inferenceFlags...)
-	createArgs = append(createArgs, "--policy", policyTmp)
-	createArgs = append(createArgs, envFlags...)
-	createArgs = append(createArgs, "--detach")
 
+	// Step 7: Create sandbox from the harness image
+	fmt.Printf("[agent-run] Creating sandbox '%s'...\n", sandboxName)
+	createArgs := buildCreateArgs(sandboxName, image, policyTmp, inferenceFlags, envFlags, driverConfigJSON)
 	if err := execCmd("openshell", createArgs...); err != nil {
 		return fmt.Errorf("failed to create sandbox: %w", err)
 	}
@@ -192,34 +212,29 @@ func Run(cfg *Config) error {
 	}
 	fmt.Println("[agent-run] Sandbox ready.")
 
-	// Step 8: Harness-specific install
-	if err := installHarness(cfg.Harness, sandboxName); err != nil {
-		return err
-	}
-
-	// Step 9: Map provider credentials to harness env vars + pre-seed config
-	if err := runSandboxInitHook(cfg.Harness, sandboxName); err != nil {
+	// Step 8: Map provider credentials to harness env vars + pre-seed config
+	if err := harness.InitHook()(sandboxName); err != nil {
 		return fmt.Errorf("sandbox credential setup failed: %w", err)
 	}
-	if err := preseedHarnessConfig(cfg.Harness, sandboxName); err != nil {
+	if err := harness.Preseed()(sandboxName); err != nil {
 		return fmt.Errorf("harness config setup failed: %w", err)
 	}
 
-	// Step 10: Configure global git credential helper (must happen before clone for private repos)
+	// Step 9a: Configure global git credential helper (must happen before clone for private repos)
 	fmt.Println("[agent-run] Configuring Git credentials...")
 	credHelper := `git config --global credential.helper '!f() { echo "username=x-access-token"; echo "password=${api_token:-$GH_TOKEN}"; }; f'`
 	if err := execCmd("openshell", "sandbox", "exec", "-n", sandboxName, "--", "sh", "-c", credHelper); err != nil {
 		return fmt.Errorf("git credential setup failed: %w", err)
 	}
 
-	// Step 11: Clone repository
+	// Step 9b: Clone repository
 	fmt.Printf("[agent-run] Cloning %s...\n", cfg.Repo)
 	if err := execCmd("openshell", "sandbox", "exec", "-n", sandboxName, "--",
 		"git", "clone", fmt.Sprintf("https://github.com/%s.git", cfg.Repo), "/sandbox/repo"); err != nil {
 		return fmt.Errorf("clone failed: %w", err)
 	}
 
-	// Step 12: Configure Git identity
+	// Step 9c: Configure Git identity
 	fmt.Println("[agent-run] Configuring Git identity...")
 	gitConfig := fmt.Sprintf(`
 		cd /sandbox/repo
@@ -232,8 +247,18 @@ func Run(cfg *Config) error {
 		return fmt.Errorf("git configuration failed: %w", err)
 	}
 
-	// Step 11: Launch agent
-	harnessCmd := harnessCommands[cfg.Harness]
+	// Step 10: mise toolchain install (WP4b seam; no-op until implemented)
+	if err := runMisePhase(cfg, sandboxName); err != nil {
+		return err
+	}
+
+	// Step 11: Narrow egress before the agent starts (WP4b seam; no-op until
+	// implemented). Must fail closed: an error here aborts before launch.
+	if err := narrowPolicy(cfg, sandboxName); err != nil {
+		return err
+	}
+
+	// Step 12: Launch agent
 	fmt.Printf("[agent-run] Launching harness: %s\n", cfg.Harness)
 	if cfg.Model != "" {
 		fmt.Printf("[agent-run] Model override: %s\n", cfg.Model)
@@ -241,26 +266,62 @@ func Run(cfg *Config) error {
 	fmt.Println("[agent-run] Working directory: /sandbox/repo")
 	fmt.Println("---")
 
-	// Build harness args
-	var harnessArgParts []string
-	if cfg.Model != "" {
-		switch cfg.Harness {
-		case HarnessClaude, HarnessPi:
-			harnessArgParts = append(harnessArgParts, "--model", shellQuote(cfg.Model))
-		}
-	}
-	for _, a := range cfg.PassthroughArgs {
-		harnessArgParts = append(harnessArgParts, shellQuote(a))
-	}
-	harnessArgs := strings.Join(harnessArgParts, " ")
-
-	launchCmd := fmt.Sprintf("source ~/.profile 2>/dev/null; export GH_TOKEN=$api_token; exec %s %s", harnessCmd, harnessArgs)
+	launchCmd := buildLaunchCmd(harness, cfg)
 	_ = execCmd("openshell", "sandbox", "exec", "-n", sandboxName, "--workdir", "/sandbox/repo", "--tty", "--",
 		"bash", "-c", launchCmd)
 
 	fmt.Println("\n[agent-run] Harness exited. Cleaning up...")
 
 	return nil
+}
+
+// prepareCache is step 6: ensure the per-repo mise cache exists for the driver
+// and return the --driver-config-json value that mounts it ("" = no mount).
+// WP4b seam: no-op until the cache is implemented.
+func prepareCache(cfg *Config, driver string) (driverConfigJSON string, err error) {
+	return "", nil
+}
+
+// runMisePhase is step 10: install the target repo's mise toolchain.
+// WP4b seam: no-op until mise support is implemented.
+func runMisePhase(cfg *Config, sandboxName string) error {
+	return nil
+}
+
+// narrowPolicy is step 11: remove mise_bootstrap egress and verify, always
+// (even when mise was skipped). WP4b seam: no-op until narrowing is implemented.
+func narrowPolicy(cfg *Config, sandboxName string) error {
+	return nil
+}
+
+// buildCreateArgs assembles the `openshell sandbox create` arguments.
+// driverConfigJSON is passed through only when non-empty.
+func buildCreateArgs(name, image, policyPath string, inferenceFlags, envFlags []string, driverConfigJSON string) []string {
+	args := []string{
+		"sandbox", "create",
+		"--name", name,
+		"--from", image,
+		"--provider", GitHubProviderName,
+	}
+	args = append(args, inferenceFlags...)
+	args = append(args, "--policy", policyPath)
+	args = append(args, envFlags...)
+	if driverConfigJSON != "" {
+		args = append(args, "--driver-config-json", driverConfigJSON)
+	}
+	return append(args, "--detach")
+}
+
+// buildLaunchCmd builds the bash -c command that execs the harness.
+func buildLaunchCmd(h *Harness, cfg *Config) string {
+	var parts []string
+	if cfg.Model != "" && h.ModelFlag != "" {
+		parts = append(parts, h.ModelFlag, shellQuote(cfg.Model))
+	}
+	for _, a := range cfg.PassthroughArgs {
+		parts = append(parts, shellQuote(a))
+	}
+	return fmt.Sprintf("source ~/.profile 2>/dev/null; export GH_TOKEN=$api_token; exec %s %s", h.Command, strings.Join(parts, " "))
 }
 
 // waitForSandbox waits for a sandbox to become ready.
@@ -283,24 +344,54 @@ func waitForSandbox(name string) error {
 }
 
 // printDiagnostics prints diagnostic information.
-func printDiagnostics() error {
+func printDiagnostics(cfg *Config) error {
 	fmt.Println("=== agent-run diagnostics ===")
 
-	// OpenShell version
+	// OpenShell version + minimum-version gate
 	fmt.Print("  OpenShell version:  ")
 	out, _ := execCmdOutput("openshell", "--version")
 	if out != "" {
 		fmt.Println(strings.TrimSpace(out))
+		if _, err := gateOpenShellVersion(out); err != nil {
+			fmt.Printf("  Version gate:       FAIL (%v)\n", err)
+		} else {
+			fmt.Printf("  Version gate:       ok (>= %s)\n", MinOpenShellVersion)
+		}
 	} else {
 		fmt.Println("not found")
+		fmt.Printf("  Version gate:       FAIL (requires >= %s)\n", MinOpenShellVersion)
 	}
+
+	// Resolved image refs (--image applies to the selected harness only)
+	fmt.Println("  Harness images:")
+	for _, name := range HarnessNames() {
+		h := harnesses[name]
+		override := ""
+		if cfg != nil && cfg.Harness == name {
+			override = cfg.Image
+		}
+		ref, err := resolveImage(h, override)
+		if err != nil {
+			ref = "ERROR: " + err.Error()
+		}
+		fmt.Printf("    %-10s %s\n", name+":", ref)
+	}
+
+	// Compute driver
+	driverOverride := ""
+	if cfg != nil {
+		driverOverride = cfg.Driver
+	}
+	driver := detectDriver(driverOverride)
+	fmt.Printf("  Compute driver:     %s\n", driver)
+	fmt.Printf("  Driver config:      cache mounts need gateway setting %s\n", allowDriverConfigHint(driver))
 
 	fmt.Println("  Token minting:      Go-native (repo-scoped)")
 	fmt.Printf("  Installation ID:    %s\n", InstallationID)
 	fmt.Printf("  GitHub App slug:    %s\n", AppSlug)
 	fmt.Printf("  GitHub App ID:      %s\n", AppID)
 	fmt.Println("  Repo discovery:     dynamic (via GitHub App installation)")
-	fmt.Printf("  Supported harnesses: %s, %s, %s\n", HarnessClaude, HarnessPi, HarnessShell)
+	fmt.Printf("  Supported harnesses: %s\n", strings.Join(HarnessNames(), ", "))
 
 	// GitHub App keychain
 	fmt.Println("\n  GitHub App credentials:")
@@ -381,63 +472,6 @@ func printDiagnostics() error {
 // keychainExists checks if a keychain entry exists (macOS only).
 func keychainExists(service string) bool {
 	return execCmdSilent("security", "find-generic-password", "-s", service, "-a", os.Getenv("USER")) == nil
-}
-
-// preseedHarnessConfig creates config files so interactive harnesses
-// skip first-run onboarding wizards inside the sandbox.
-func preseedHarnessConfig(harness, sandboxName string) error {
-	switch harness {
-	case HarnessClaude:
-		// Claude Code checks ~/.claude.json for hasCompletedOnboarding and
-		// per-project hasTrustDialogAccepted. Without these, every sandbox
-		// launch triggers interactive onboarding/trust prompts.
-		return execCmd("openshell", "sandbox", "exec", "-n", sandboxName, "--", "sh", "-c",
-			`mkdir -p ~/.claude && cat > ~/.claude.json << 'PRESEED'
-{
-  "hasCompletedOnboarding": true,
-  "projects": {
-    "/sandbox/repo": {
-      "hasTrustDialogAccepted": true,
-      "hasCompletedProjectOnboarding": true
-    }
-  }
-}
-PRESEED`)
-	}
-	return nil
-}
-
-// installHarness installs harness-specific software in the sandbox.
-func installHarness(harness, sandboxName string) error {
-	switch harness {
-	case HarnessPi:
-		fmt.Println("[agent-run] Installing Pi in sandbox...")
-		installCmd := `
-			mkdir -p /sandbox/.npm-global
-			npm config set prefix /sandbox/.npm-global
-			npm install -g @earendil-works/pi-coding-agent
-		`
-		if err := execCmd("openshell", "sandbox", "exec", "-n", sandboxName, "--", "sh", "-c", installCmd); err != nil {
-			fmt.Println("[agent-run] WARNING: Pi npm install may have failed.")
-		}
-
-		pathSetup := `
-			echo 'export PATH="/sandbox/.npm-global/bin:$PATH"' >> ~/.bashrc
-			echo 'export PATH="/sandbox/.npm-global/bin:$PATH"' >> ~/.profile
-		`
-		if err := execCmd("openshell", "sandbox", "exec", "-n", sandboxName, "--", "sh", "-c", pathSetup); err != nil {
-			return err
-		}
-
-		// Install LiteLLM provider extension via Pi's extension system
-		fmt.Println("[agent-run] Installing pi-provider-litellm extension...")
-		installExt := `export PATH="/sandbox/.npm-global/bin:$PATH" && pi install npm:pi-provider-litellm`
-		if err := execCmd("openshell", "sandbox", "exec", "-n", sandboxName, "--", "sh", "-c", installExt); err != nil {
-			fmt.Println("[agent-run] WARNING: pi-provider-litellm install may have failed.")
-		}
-		return nil
-	}
-	return nil
 }
 
 // findRepoRoot finds the repository root directory.

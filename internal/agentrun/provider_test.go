@@ -140,12 +140,12 @@ func TestResolveInferenceEnv(t *testing.T) {
 		}
 	})
 
-	t.Run("shell harness forwards nothing", func(t *testing.T) {
+	t.Run("unknown harness forwards nothing", func(t *testing.T) {
 		t.Setenv("ANTHROPIC_API_KEY", "sk-test")
 
-		flags := resolveInferenceEnv(HarnessShell, nil)
+		flags := resolveInferenceEnv("bogus", nil)
 		if len(flags) != 0 {
-			t.Errorf("expected no auto-forward for shell, got %v", flags)
+			t.Errorf("expected no auto-forward for unknown harness, got %v", flags)
 		}
 	})
 }
@@ -233,17 +233,14 @@ func TestCreateInferenceProviders(t *testing.T) {
 		})
 	})
 
-	t.Run("shell creates no providers", func(t *testing.T) {
+	t.Run("unknown harness creates no providers", func(t *testing.T) {
 		withMockExec(t, func(mock *mockCmd) {
-			flags, names, err := createInferenceProviders(HarnessShell, nil)
+			flags, names, err := createInferenceProviders("bogus", nil)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if len(names) != 0 {
-				t.Errorf("expected no providers for shell, got %v", names)
-			}
-			if len(flags) != 0 {
-				t.Errorf("expected no flags for shell, got %v", flags)
+			if len(names) != 0 || len(flags) != 0 {
+				t.Errorf("expected no providers/flags, got %v / %v", names, flags)
 			}
 		})
 	})
@@ -252,7 +249,7 @@ func TestCreateInferenceProviders(t *testing.T) {
 func TestRunSandboxInitHook(t *testing.T) {
 	t.Run("claude maps ANTHROPIC_API_KEY", func(t *testing.T) {
 		withMockExec(t, func(mock *mockCmd) {
-			err := runSandboxInitHook("claude", "test-sb")
+			err := harnesses["claude"].InitHook()("test-sb")
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -269,7 +266,7 @@ func TestRunSandboxInitHook(t *testing.T) {
 	t.Run("claude maps CLAUDE_CODE_OAUTH_TOKEN when set", func(t *testing.T) {
 		t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "oauth-token")
 		withMockExec(t, func(mock *mockCmd) {
-			err := runSandboxInitHook("claude", "test-sb")
+			err := harnesses["claude"].InitHook()("test-sb")
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -282,63 +279,13 @@ func TestRunSandboxInitHook(t *testing.T) {
 
 	t.Run("pi maps LITELLM_API_KEY", func(t *testing.T) {
 		withMockExec(t, func(mock *mockCmd) {
-			err := runSandboxInitHook("pi", "test-sb")
+			err := harnesses["pi"].InitHook()("test-sb")
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
 			cmd := strings.Join(mock.calls[0], " ")
 			if !strings.Contains(cmd, "LITELLM_API_KEY") {
 				t.Error("expected LITELLM_API_KEY in init hook")
-			}
-		})
-	})
-
-	t.Run("shell is noop", func(t *testing.T) {
-		withMockExec(t, func(mock *mockCmd) {
-			err := runSandboxInitHook("shell", "test-sb")
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if len(mock.calls) != 0 {
-				t.Errorf("expected 0 calls for shell, got %d", len(mock.calls))
-			}
-		})
-	})
-}
-
-func TestInstallHarness(t *testing.T) {
-	t.Run("pi installs npm package", func(t *testing.T) {
-		withMockExec(t, func(mock *mockCmd) {
-			err := installHarness("pi", "test-sb")
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if len(mock.calls) < 2 {
-				t.Fatalf("expected at least 2 calls (install + path setup), got %d", len(mock.calls))
-			}
-		})
-	})
-
-	t.Run("claude is noop", func(t *testing.T) {
-		withMockExec(t, func(mock *mockCmd) {
-			err := installHarness("claude", "test-sb")
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if len(mock.calls) != 0 {
-				t.Errorf("expected 0 calls for claude, got %d", len(mock.calls))
-			}
-		})
-	})
-
-	t.Run("shell is noop", func(t *testing.T) {
-		withMockExec(t, func(mock *mockCmd) {
-			err := installHarness("shell", "test-sb")
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if len(mock.calls) != 0 {
-				t.Errorf("expected 0 calls for shell, got %d", len(mock.calls))
 			}
 		})
 	})
