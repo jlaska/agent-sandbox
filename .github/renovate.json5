@@ -1,5 +1,5 @@
 // Renovate configuration for agent-sandbox (plan: issue #41, WP6).
-// Validate with: npx --yes --package renovate@44.164.10 renovate-config-validator .github/renovate.json5
+// Validate with: npx --yes --package renovate@44.151.0 renovate-config-validator --strict  (from the repo root, no file argument; same as CI)
 {
   $schema: "https://docs.renovatebot.com/renovate-schema.json",
 

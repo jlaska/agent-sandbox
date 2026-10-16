@@ -1,5 +1,7 @@
 # Phase 5 — Multi-agent Compatibility
 
+> Historical record. The `shell` harness has since been removed and `opencode` added, and sandboxes now run from per-harness images. For current usage see the [README](../README.md) and [phase7-harness-images.md](phase7-harness-images.md).
+
 ## Summary
 
 Phase 5 validates that multiple coding agents can operate within the OpenShell sandbox while sharing the same GitHub security policy. Each agent independently authenticates to its inference provider through the LiteLLM proxy and passes the full GitHub acceptance matrix.
@@ -16,7 +18,6 @@ agent-run <repo> <harness> [--provider <provider>] [--model <model>] [--max]
 |---------|-------------------|--------|-----|
 | claude  | ✓ | ✓ | ✓ |
 | pi      | ✓ |   |   |
-| shell   | (none) | | |
 
 ### Examples
 
@@ -29,7 +30,6 @@ agent-run jlaska/agent-sandbox-test claude --provider api                     # 
 agent-run jlaska/agent-sandbox-test claude --provider litellm --max           # Max subscription billing
 agent-run jlaska/agent-sandbox-test pi                                        # litellm, default model
 agent-run jlaska/agent-sandbox-test pi --model go-mimo-v2.5                   # litellm, specific model
-agent-run jlaska/agent-sandbox-test shell                                     # no inference
 ```
 
 `--model` is passed through to the harness CLI as `--model <value>`. When omitted, each harness uses its own default.
@@ -129,7 +129,7 @@ Per the Phase 5 plan: "OpenClaw proven, or a concrete upstream blocker is docume
 |---|---|
 | `openshell/litellm-inference-profile.yaml` | Custom OpenShell provider profile for LiteLLM inference |
 | `openshell/sandbox-policy.yaml` | Updated with LiteLLM, npm registry, and telemetry network policies |
-| `scripts/agent-run.sh` | Updated with multi-agent support (claude, pi, shell) and inference providers |
+| `scripts/agent-run.sh` | Updated with multi-agent support (claude, pi) and inference providers |
 | `tests/phase5-exit-gate.sh` | Per-agent acceptance matrix test suite (16 tests each) |
 | `docs/phase5-multi-agent.md` | This document |
 

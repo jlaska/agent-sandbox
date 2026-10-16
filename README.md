@@ -1,19 +1,23 @@
 # agent-sandbox
 
-Sandboxed agent launcher for AI coding agents. Runs Claude Code, Pi, or a plain
-shell inside an [OpenShell](https://github.com/nvidia/openshell) container with
+Sandboxed agent launcher for AI coding agents. Runs Claude Code, Pi, or opencode
+inside an [OpenShell](https://github.com/nvidia/openshell) container with
 per-repository GitHub security constraints.
 
 ## What it does
 
 `agent-run` handles the full lifecycle of a sandboxed agent session:
 
-1. Resolve GitHub credentials (App token or PAT)
-2. Generate a repo-scoped L7 network policy
-3. Create an isolated container with credential injection
-4. Clone the target repo, configure Git identity
-5. Launch the agent harness with your inference env vars
-6. Clean up everything on exit (sandbox, tokens, providers)
+1. Check the OpenShell CLI version (>= 0.1.4) and resolve the harness image
+2. Resolve GitHub credentials (App token or PAT)
+3. Generate a repo-scoped L7 network policy
+4. Create an isolated container from the harness image, with credential
+   injection and an optional per-repo toolchain cache
+5. Clone the target repo, configure Git identity
+6. Install the repo's [mise](https://mise.jdx.dev) toolchain (if it has one),
+   then remove the temporary install egress from the policy
+7. Launch the agent harness with your inference env vars
+8. Clean up everything on exit (sandbox, tokens, providers)
 
 The agent gets exactly the permissions it needs for one repo — enforced at the
 network layer — with credentials that self-destruct.
@@ -34,7 +38,36 @@ make build          # builds bin/agent-run
 make install        # installs to GOPATH/bin
 ```
 
-Requires: Go 1.21+, [OpenShell](https://github.com/nvidia/openshell), Podman.
+Requires: Go 1.21+, [OpenShell](https://github.com/nvidia/openshell) **0.1.4 or
+newer**, and a container runtime for the OpenShell gateway (Podman, or Docker
+as another OpenShell compute driver).
+Building images locally also requires Podman.
+
+### Upgrading from OpenShell 0.0.x
+
+`agent-run` refuses older OpenShell CLIs. OpenShell has no in-place upgrade from
+0.0.x, so:
+
+1. Note your existing sandboxes and providers (`openshell sandbox list`,
+   `openshell provider list`); they do not survive the upgrade.
+2. Uninstall OpenShell 0.0.x following the upstream upgrade notes, then install
+   0.1.4 or newer:
+
+   ```bash
+   curl -LsSf https://raw.githubusercontent.com/NVIDIA/OpenShell/main/install.sh | OPENSHELL_VERSION=v0.1.4 sh
+   ```
+
+3. To use the toolchain cache, enable `allow_driver_config` for your compute
+   driver (see [Toolchain cache](#toolchain-cache)), then recreate the gateway.
+4. Recreate sandboxes. `agent-run` always creates a fresh sandbox per run.
+
+OpenShell 0.1.4 ships no built-in provider profiles, so `provider create` fails
+until the profile is imported. You do not need to do this by hand: `agent-run`
+imports the profiles it needs (`github-agent`, `claude-code`, `anthropic`,
+`litellm-inference`) from the copies embedded in the binary, only when the
+gateway does not already list them. Sandboxes are always created with
+`--from <image ref>`; community base image names and Dockerfile builds are no
+longer supported.
 
 ## Usage
 
@@ -48,7 +81,15 @@ agent-run <owner/repo> <harness> [options] [-- <harness-args>...]
 |---|---|---|
 | `claude` | `claude` | Claude Code CLI |
 | `pi` | `pi` | Pi coding agent |
-| `shell` | `bash` | Interactive shell for debugging |
+| `opencode` | `opencode` | [opencode](https://github.com/anomalyco/opencode) coding agent |
+
+The old plain-bash `shell` harness was removed; requesting it fails with an
+error listing the supported harnesses.
+
+Each harness runs from its own image
+(`ghcr.io/jlaska/agent-<harness>`), pinned by digest in
+`openshell/images.yaml` and embedded in the binary. See
+[Harness images](#harness-images).
 
 ### Inference authentication
 
@@ -77,6 +118,27 @@ agent-run jlaska/agent-sandbox claude
 # Explicit env override
 agent-run jlaska/agent-sandbox claude --env ANTHROPIC_API_KEY=sk-ant-...
 ```
+
+#### opencode backends
+
+opencode needs an API key. The backend is chosen by `--inference`, or when the
+flag is omitted: LiteLLM if `LITELLM_API_KEY` resolves, otherwise Anthropic if
+`ANTHROPIC_API_KEY` resolves, otherwise an error naming both.
+
+```bash
+# LiteLLM (also needs LITELLM_BASE_URL)
+export LITELLM_API_KEY=sk-litellm-...
+export LITELLM_BASE_URL=https://litellm.example.com
+agent-run jlaska/agent-sandbox opencode --inference litellm --model litellm/<model-id>
+
+# Anthropic API directly
+export ANTHROPIC_API_KEY=sk-ant-...
+agent-run jlaska/agent-sandbox opencode --inference anthropic
+```
+
+`CLAUDE_CODE_OAUTH_TOKEN` (Claude Pro/Max) alone is rejected for opencode with
+an explicit error, because those tokens are not for use with third-party tools.
+`--inference` is accepted for the opencode harness only.
 
 ### GitHub authentication
 
@@ -110,14 +172,131 @@ agent-run jlaska/agent-sandbox claude -- --model opus-4-8 --allowedTools Bash,Re
 
 | Flag | Description |
 |---|---|
-| `--model <m>` | Override the default model |
+| `--model <m>` | Override the default model (passed to the harness as `--model`) |
 | `--env KEY=VAL` | Pass environment variable to sandbox (repeatable) |
+| `--image <ref>` | Use this image instead of the one pinned in `images.yaml` (see [Harness images](#harness-images)) |
+| `--no-mise` | Skip the mise toolchain install |
+| `--fresh-cache` | Clear the mise cache before installing (cannot be combined with `--no-cache`) |
+| `--no-cache` | Do not mount a persistent mise cache |
+| `--mise-allow-host host[:port]` | Extra host allowed during mise install (repeatable; default port 443) |
+| `--inference litellm\|anthropic` | Inference backend (opencode only) |
+| `--driver docker\|podman\|kubernetes\|vm` | Override compute driver detection |
 | `--github-token <t>` | Use a GitHub PAT instead of App token |
 | `--diag` | Print diagnostic information |
 | `--list-repos` | List repositories accessible to the GitHub App |
 | `--mint-token <repo>` | Mint a repo-scoped token (for scripts) |
 | `--revoke-token <t>` | Revoke a previously minted token |
 | `--generate-policy <repo>` | Generate a repo-scoped policy file |
+| `--help` | Print usage |
+
+`--diag` also reports the OpenShell version and the 0.1.4 check, the resolved
+image ref per harness, the detected compute driver, the `allow_driver_config`
+setting the cache needs, and whether the repo's cache volume exists.
+
+## Harness images
+
+Every harness runs from its own OCI image, built from a shared base, with all
+versions pinned. `openshell/images.yaml` holds the digest-pinned refs and is
+embedded in the `agent-run` binary.
+
+An image that has not been published yet has an all-zero digest in
+`images.yaml`. `agent-run` then stops with:
+
+```text
+image for claude not yet published; build locally (make images) and pass --image <ref>
+```
+
+### Local builds with `--image`
+
+```bash
+make images      # builds localhost/agent-claude:local, agent-pi:local, agent-opencode:local (Podman)
+make smoke       # smoke-test the local images (see docs/phase7-harness-images.md)
+agent-run jlaska/agent-sandbox claude --image localhost/agent-claude:local
+```
+
+`make image-claude`, `make image-pi` and `make image-opencode` build one image.
+`--image` accepts any ref; a ref without `@sha256:` logs a warning because the
+tag can move. The gateway's compute driver must be able to find the image in
+its container engine's local store (build with the same Podman the gateway uses).
+
+## Toolchains with mise
+
+After the repo is cloned, `agent-run` looks in `/sandbox/repo` for a mise
+config. It probes, in order: `mise.toml`, `.mise.toml`, `mise/config.toml`,
+`.config/mise.toml`, `.config/mise/config.toml` and `.tool-versions`.
+
+- **Config found:** `mise trust /sandbox/repo && mise install --yes` runs inside
+  the sandbox. The log shows the duration, the cache state (`cold`, `warm` or
+  `none`) and the installed tools.
+- **No config:** the install is skipped and the log says what was looked for:
+  `mise: no mise config found in /sandbox/repo (looked for: ...); skipping toolchain install`.
+- **`--no-mise`:** skipped, logged as `mise: skipped (--no-mise)`.
+- **Lockfile:** if a `mise.lock` is present the log says
+  `lockfile checksums enforced`; otherwise it warns that downloads are not
+  checksum-pinned. Run `mise lock` in the repo and commit `mise.lock`.
+
+The install runs under a temporary `mise_bootstrap` network rule that allows
+read-only access to the tool registries (GitHub releases, mise, PyPI, npm,
+dl.k8s.io, get.helm.sh and similar). The rule is present at sandbox creation
+and is **always removed before the agent starts**, even when mise is skipped.
+If the removal cannot be verified, `agent-run` deletes the sandbox, revokes the
+token and exits non-zero. If a tool needs a host outside the default list (for
+example `nodejs.org` for node), pass it explicitly:
+
+```bash
+agent-run jlaska/agent-sandbox claude --mise-allow-host nodejs.org
+```
+
+### Toolchain cache
+
+Installed tools are cached per repository in a volume named
+`mise-cache-<owner>-<repo>`, mounted at `/sandbox/.mise-cache`, so a second run
+of the same repo skips the downloads. `--fresh-cache` empties the cache before
+installing, and `--no-cache` mounts none.
+
+| Driver | Behaviour |
+|---|---|
+| `docker`, `podman` | `agent-run` creates a labelled named volume in that engine if missing and mounts it |
+| `kubernetes` | Expects a PersistentVolumeClaim of the same name in the sandbox namespace; `agent-run` prints the `kubectl` manifest to create it once. Sandboxes stay Pending until it exists, and a fresh PVC may be root-owned, so check ownership if installs fail |
+| `vm` or unknown | No cache; the reason is logged |
+
+The driver is read from `openshell gateway info`; override it with `--driver`.
+Mounting needs the gateway to allow caller-supplied driver config. Set this in
+the gateway config for your driver, then recreate the gateway:
+
+```toml
+[openshell.drivers.podman]   # or docker / kubernetes
+allow_driver_config = true
+```
+
+If the gateway refuses the mount, `agent-run` prints this setting, deletes the
+partial sandbox and retries once without a cache.
+
+The cache is read-write for the agent, so a compromised agent could poison it
+for the next run of the same repo. Use `--fresh-cache` after any suspicious
+session; commit `mise.lock` so installs are checksum-verified. See
+[docs/phase7-harness-images.md](docs/phase7-harness-images.md#threat-notes).
+
+## Releasing and updating images (maintainers)
+
+1. Change a pin (or Renovate does) in `openshell/images/**` and open a PR.
+2. CI builds the changed harnesses with Podman on amd64 and arm64 and runs the
+   smoke tests. PR runs never push.
+3. Merging to `main` publishes multi-arch images to
+   `ghcr.io/jlaska/agent-<harness>` (tags `<ver>` and
+   `<ver>-<YYYYMMDD>.<sha7>`) and writes the digest to the job summary.
+4. Renovate opens a PR bumping the digest in `openshell/images.yaml`.
+5. Merge that PR and tag an `agent-run` release; the new binary embeds the new
+   digests.
+
+One-time setup: GHCR packages are private on first push. After the first publish
+make `agent-claude`, `agent-pi` and `agent-opencode` **public** in the GitHub
+package settings, otherwise sandboxes cannot pull them.
+
+opencode publishes no checksum file, so its Dockerfile hard-codes sha256 values.
+A Renovate version bump fails the build until you run
+`openshell/images/refresh-checksums.sh` and commit the result. Details are in
+[docs/phase7-harness-images.md](docs/phase7-harness-images.md#renovate).
 
 ## Development
 
@@ -127,6 +306,9 @@ make vet        # go vet
 make lint       # golangci-lint
 make fmt        # format source
 make setup      # install dev dependencies + pre-commit hooks
+make images     # build harness images locally with Podman
+make smoke      # smoke-test the local images
+make help       # list all targets
 ```
 
 ## License

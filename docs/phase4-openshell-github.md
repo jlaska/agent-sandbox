@@ -1,5 +1,7 @@
 # Phase 4 - Secure GitHub/OpenShell Integration + `agent-run`
 
+> Historical record for OpenShell 0.0.113. `agent-run` now requires OpenShell 0.1.4 or newer, which has no in-place upgrade from 0.0.x; see "Upgrading from OpenShell 0.0.x" in the [README](../README.md).
+
 ## Overview
 
 Phase 4 joins the GitHub App authorization model (Phase 1-2) with the local
