@@ -67,6 +67,7 @@ func Run(cfg *Config) error {
 	// State for cleanup
 	var (
 		sandboxName      string
+		cleanupSandbox   string // set once creation starts; the deferred cleanup deletes it
 		ghCred           *GitHubCredential
 		providersCreated []string
 	)
@@ -74,9 +75,9 @@ func Run(cfg *Config) error {
 	// Cleanup function
 	defer func() {
 		fmt.Println("--- Cleanup ---")
-		if sandboxName != "" {
-			fmt.Printf("  Deleting sandbox: %s ... ", sandboxName)
-			_ = execCmdSilent("openshell", "sandbox", "delete", sandboxName)
+		if cleanupSandbox != "" {
+			fmt.Printf("  Deleting sandbox: %s ... ", cleanupSandbox)
+			_ = execCmdSilent("openshell", "sandbox", "delete", cleanupSandbox)
 			fmt.Println("done")
 		}
 		if ghCred != nil && ghCred.Revocable() {
@@ -209,6 +210,7 @@ func Run(cfg *Config) error {
 	buildArgs := func(driverConfigJSON string) []string {
 		return buildCreateArgs(sandboxName, image, policyTmp, inferenceFlags, envFlags, driverConfigJSON)
 	}
+	cleanupSandbox = sandboxName
 	if err := createSandbox(sandboxName, buildArgs, cache); err != nil {
 		return fmt.Errorf("failed to create sandbox: %w", err)
 	}
@@ -262,7 +264,7 @@ func Run(cfg *Config) error {
 	// Step 11: Narrow egress before the agent starts. Fails closed: on error
 	// the sandbox is deleted and the token revoked before returning.
 	if err := enforceNarrowing(cfg, sandboxName, ghCred); err != nil {
-		sandboxName, ghCred = "", nil // already cleaned up; skip in deferred cleanup
+		cleanupSandbox, ghCred = "", nil // already cleaned up; skip in deferred cleanup
 		return err
 	}
 

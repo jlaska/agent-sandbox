@@ -277,7 +277,12 @@ func printUsage() {
 	fmt.Println("  --driver docker|podman|kubernetes|vm")
 	fmt.Println("                  Override compute driver detection")
 	fmt.Println("  --diag          Print diagnostic info")
+	fmt.Println("  --github-token <pat>\n                  GitHub PAT (alternative to the App token)")
 	fmt.Println("  --list-repos    List approved repositories")
+	fmt.Println("  --mint-token    Mint a repo-scoped token and print it")
+	fmt.Println("  --revoke-token <t>\n                  Revoke a previously minted token")
+	fmt.Println("  --generate-policy\n                  Generate a repo-scoped policy file and print its path")
+	fmt.Println("  --help          Show this help")
 }
 
 func printRepos() {

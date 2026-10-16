@@ -75,3 +75,20 @@ func TestPrintDiagnostics(t *testing.T) {
 		}
 	})
 }
+
+// A refused OpenShell version must stop the run before any mutating call,
+// including the deferred sandbox delete.
+func TestRunVersionGateMakesNoMutatingCalls(t *testing.T) {
+	withMockExec(t, func(mock *mockCmd) {
+		mock.execOutput = func(string, ...string) (string, error) { return "openshell 0.0.113\n", nil }
+		err := Run(&Config{Repo: "jlaska/agent-sandbox", Harness: HarnessClaude})
+		if err == nil || !strings.Contains(err.Error(), "too old") {
+			t.Fatalf("want version-gate error, got %v", err)
+		}
+		for _, c := range mock.calls {
+			if strings.Contains(strings.Join(c, " "), "delete") {
+				t.Errorf("unexpected mutating call after refused version: %v", c)
+			}
+		}
+	})
+}
