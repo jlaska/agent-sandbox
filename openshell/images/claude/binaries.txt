@@ -1,0 +1,12 @@
+# Policy-path contract for agent-claude: real files (readlink -f p == p) that must exist.
+# Every binary that sandbox-policy.yaml grants network access to for this harness must be listed here.
+/usr/local/bin/claude
+/usr/local/bin/node
+/usr/local/bin/mise
+/usr/local/bin/uv
+/usr/local/bin/uvx
+/usr/local/bin/gh
+/usr/bin/git
+/usr/lib/git-core/git-remote-http
+/usr/bin/curl
+/usr/bin/python3.12

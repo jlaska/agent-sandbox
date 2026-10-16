@@ -14,7 +14,12 @@ SRC_DIR := ./cmd/agent-run
 PKG_DIR := ./internal/agentrun
 BUILD_DIR := ./bin
 
-.PHONY: all build clean test lint install setup help
+.PHONY: all build clean test lint install setup help images image-claude image-pi image-opencode smoke lint-images
+
+# Extra flags for tests/images/smoke.sh (e.g. SMOKE_FLAGS=--skip-network).
+# --skip-policy-contract is temporary: sandbox-policy.yaml still lists paths no image provides;
+# WP4b removes them and this default (run `make smoke SMOKE_FLAGS=` for the strict check).
+SMOKE_FLAGS ?= --skip-policy-contract
 
 ## all: Build the binary
 all: build
@@ -77,6 +82,35 @@ setup:
 	pre-commit run --all-files || true
 	@echo ""
 	@echo "Setup complete. Pre-commit hooks are installed."
+
+## images: Build all harness images locally with podman (localhost/agent-<h>:local)
+images:
+	./openshell/images/build.sh --local all
+
+## image-claude: Build the claude harness image locally
+image-claude:
+	./openshell/images/build.sh --local claude
+
+## image-pi: Build the pi harness image locally
+image-pi:
+	./openshell/images/build.sh --local pi
+
+## image-opencode: Build the opencode harness image locally
+image-opencode:
+	./openshell/images/build.sh --local opencode
+
+## smoke: Smoke-test all locally built harness images (run make images first)
+smoke:
+	@for h in claude pi opencode; do \
+		./tests/images/smoke.sh localhost/agent-$$h:local $$h $(SMOKE_FLAGS) || exit 1; \
+	done
+
+## lint-images: Lint image Dockerfiles (hadolint) and image shell scripts (shellcheck)
+lint-images:
+	@which hadolint > /dev/null 2>&1 || { echo "hadolint not found. Install: brew install hadolint"; exit 1; }
+	@which shellcheck > /dev/null 2>&1 || { echo "shellcheck not found. Install: brew install shellcheck"; exit 1; }
+	hadolint openshell/images/*/Dockerfile
+	shellcheck openshell/images/build.sh openshell/images/version.sh tests/images/smoke.sh
 
 ## help: Show this help message
 help:
