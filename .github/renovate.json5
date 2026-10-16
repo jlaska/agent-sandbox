@@ -1,0 +1,125 @@
+// Renovate configuration for agent-sandbox (plan: issue #41, WP6).
+// Validate with: npx --yes --package renovate@44.164.10 renovate-config-validator .github/renovate.json5
+{
+  $schema: "https://docs.renovatebot.com/renovate-schema.json",
+
+  // Base presets: recommended defaults, SHA-pinned GitHub Actions, plain (non-semantic) commit titles.
+  extends: [
+    "config:recommended",
+    "helpers:pinGitHubActionDigests",
+    ":semanticCommitsDisabled",
+  ],
+  dependencyDashboard: true,
+  labels: ["dependencies"],
+  // Never automerge; every bump is reviewed by a human.
+  automerge: false,
+
+  // Managers: dockerfile (FROM digest pin), github-actions and gomod are on by default via
+  // config:recommended. Restrict the dockerfile manager to our image Dockerfiles only.
+  // (managerFilePatterns replaced fileMatch in Renovate 40+; values are regex strings like "/.../".)
+  dockerfile: {
+    managerFilePatterns: ["/^openshell/images/.+/Dockerfile$/"],
+  },
+
+  // Harness Dockerfiles use `ARG BASE_IMAGE=localhost/agent-base:local` + `FROM ${BASE_IMAGE}`: a locally
+  // built (podman) image that is not in any registry. Never look it up (nor any localhost/* image).
+  ignoreDeps: ["base", "localhost/agent-base"],
+
+  customManagers: [
+    {
+      // Dockerfile pins WITHOUT extractVersion (default case):
+      //   # renovate: datasource=github-releases depName=jdx/mise versioning=loose
+      //   ARG MISE_VERSION=2026.10.11
+      // The comment must be on the line directly above the ARG; versioning= is optional and
+      // must come after depName=. Release tags with or without a leading "v" resolve to a
+      // bare version (ARG values carry no "v").
+      customType: "regex",
+      managerFilePatterns: ["/^openshell/images/.+/Dockerfile$/"],
+      matchStrings: [
+        "#\\s*renovate:\\s*datasource=(?<datasource>\\S+)\\s+depName=(?<depName>\\S+)(?:\\s+versioning=(?<versioning>\\S+))?[ \\t]*\\r?\\n\\s*ARG\\s+[A-Za-z0-9_]+=(?<currentValue>\\S+)",
+      ],
+      extractVersionTemplate: "^v?(?<version>.+)$",
+    },
+    {
+      // Dockerfile pins WITH an explicit tag-extraction regex (overrides the "v?" default above):
+      //   # renovate: datasource=github-releases depName=foo/bar versioning=loose extractVersion=^release-(?<version>.+)$
+      //   ARG BAR_VERSION=1.2.3
+      // extractVersion= must be last on the comment line and contain no spaces.
+      customType: "regex",
+      managerFilePatterns: ["/^openshell/images/.+/Dockerfile$/"],
+      matchStrings: [
+        "#\\s*renovate:\\s*datasource=(?<datasource>\\S+)\\s+depName=(?<depName>\\S+)(?:\\s+versioning=(?<versioning>\\S+))?\\s+extractVersion=(?<extractVersion>\\S+)[ \\t]*\\r?\\n\\s*ARG\\s+[A-Za-z0-9_]+=(?<currentValue>\\S+)",
+      ],
+    },
+    {
+      // openshell/images.yaml: digest-pinned image refs consumed by agent-run.
+      //   # renovate: datasource=docker depName=ghcr.io/jlaska/agent-claude versioning=semver
+      //   ref: ghcr.io/jlaska/agent-claude:2.1.301@sha256:<64 hex>
+      // Capturing currentDigest makes digest-only updates (same tag re-pushed) open PRs.
+      customType: "regex",
+      managerFilePatterns: ["/^openshell/images\\.yaml$/"],
+      matchStrings: [
+        "#\\s*renovate:\\s*datasource=(?<datasource>\\S+)\\s+depName=(?<depName>\\S+)(?:\\s+versioning=(?<versioning>\\S+))?[ \\t]*\\r?\\n\\s*ref:\\s*\\S+?:(?<currentValue>[^@\\s]+)@(?<currentDigest>sha256:[a-f0-9]{64})",
+      ],
+    },
+  ],
+
+  packageRules: [
+    // Belt and braces: anything under localhost/ is a local build, never a registry dependency.
+    {
+      description: "ignore locally built images",
+      matchPackageNames: ["/^localhost//"],
+      enabled: false,
+    },
+    // Per-harness groups: one PR per harness bundling its CLI(s) and its published image.
+    {
+      description: "claude harness",
+      matchDepNames: ["@anthropic-ai/claude-code", "ghcr.io/jlaska/agent-claude"],
+      groupName: "harness-claude",
+    },
+    {
+      description: "pi harness",
+      matchDepNames: [
+        "@earendil-works/pi-coding-agent",
+        "pi-provider-litellm",
+        "ghcr.io/jlaska/agent-pi",
+      ],
+      groupName: "harness-pi",
+    },
+    {
+      description: "opencode harness",
+      matchDepNames: ["anomalyco/opencode", "ghcr.io/jlaska/agent-opencode"],
+      groupName: "harness-opencode",
+    },
+    // Shared base image toolchain: ubuntu digest + node + mise + uv + gh.
+    {
+      description: "shared base image",
+      matchDepNames: [
+        "nvcr.io/nvidia/base/ubuntu",
+        "node",
+        "jdx/mise",
+        "astral-sh/uv",
+        "cli/cli",
+      ],
+      groupName: "base-image",
+    },
+    // Harness CLIs are young/fast-moving: wait before proposing releases.
+    {
+      description: "release-age delay for harness CLIs",
+      matchDepNames: [
+        "@anthropic-ai/claude-code",
+        "@earendil-works/pi-coding-agent",
+        "pi-provider-litellm",
+        "anomalyco/opencode",
+      ],
+      minimumReleaseAge: "3 days",
+    },
+    // Published agent images: only plain X.Y.Z tags (ignore X.Y.Z-YYYYMMDD.sha7), labelled for digest bumps.
+    {
+      description: "published agent images",
+      matchDepNames: ["/^ghcr\\.io/jlaska/agent-/"],
+      allowedVersions: "/^\\d+\\.\\d+\\.\\d+$/",
+      addLabels: ["image-digest"],
+    },
+  ],
+}
