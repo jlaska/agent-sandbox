@@ -33,7 +33,7 @@ FIXTURE_TOML="${SCRIPT_DIR}/images/fixtures/mise.toml"
 
 MIN_OPENSHELL="0.1.4"
 MISE_REPO="${MISE_REPO:-jlaska/agent-sandbox-mise-fixture}"
-PLAIN_REPO="${PLAIN_REPO:-jlaska/agent-sandbox-test}"
+PLAIN_REPO="${PLAIN_REPO:-jlaska/agent-sandbox}"
 ENGINE="${ENGINE:-}"
 DRIVER=""
 TIMEOUT=900          # seconds to wait for agent-run to reach "Launching harness"
@@ -80,7 +80,7 @@ Options:
                           e.g. --image claude=localhost/agent-claude:local
   --mise-repo OWNER/REPO  fixture repo with a mise.toml mirroring
                           tests/images/fixtures/mise.toml (default: jlaska/agent-sandbox-mise-fixture)
-  --plain-repo OWNER/REPO repo WITHOUT any mise config (default: jlaska/agent-sandbox-test)
+  --plain-repo OWNER/REPO repo WITHOUT any mise config (default: jlaska/agent-sandbox)
   --engine podman|docker  container engine holding the cache volume (default: podman,
                           else docker). Passed to agent-run as --driver unless --driver is given.
   --driver D              pass --driver D to agent-run (docker|podman|kubernetes|vm)
@@ -100,9 +100,11 @@ with a reason, never failed. GitHub App credentials are required for every targe
 version-gate.
 
 How sessions work: each session runs agent-run in the background with its stdin held
-open, so the harness (e.g. `claude -p`) blocks after the egress has been narrowed. The
-checks then probe the live sandbox with `openshell sandbox exec`, and closing stdin ends
-the harness so agent-run's own cleanup runs (and is verified).
+open and primed with one byte, so the harness (e.g. `claude -p`, which gives up on a
+silent stdin after 3s) blocks waiting for EOF after the egress has been narrowed. The
+checks then probe the live sandbox with `openshell sandbox exec`. The session ends with
+SIGTERM to agent-run, never EOF (EOF would send the byte as a prompt, an inference
+call), so agent-run's signal cleanup runs (and is verified).
 
 DoD -> named checks (a check is reported as [target] name):
   DoD-2  claude --version == Dockerfile pin    image-ref, engine-image-in-use, harness-version  [claude]
@@ -202,7 +204,7 @@ To publish it (private repo) and make it reachable by agent-run:
   # (Settings -> Applications -> jlaska-agent -> Configure -> Repository access)
   ./tests/phase7-exit-gate.sh --mise-repo <owner>/agent-sandbox-mise-fixture ...
 
-The plain (no mise config) repo defaults to jlaska/agent-sandbox-test; it must contain
+The plain (no mise config) repo defaults to jlaska/agent-sandbox; it must contain
 none of: mise.toml .mise.toml mise/config.toml .config/mise.toml .config/mise/config.toml .tool-versions
 EOF
 }
@@ -291,7 +293,8 @@ start_session() {
     rm -f "$fifo"
     mkfifo "$fifo" || return 1
     read -r -a holdargs <<<"$(hold_args_for "$harness")"
-    sleep "$HOLD_SECONDS" >"$fifo" &
+    # One byte up front: claude -p proceeds without stdin if none arrives in 3s.
+    (printf ' '; exec sleep "$HOLD_SECONDS") >"$fifo" &
     S_HOLD=$!
     "$AGENT_RUN" "$repo" "$harness" "$@" -- "${holdargs[@]}" <"$fifo" >"$S_LOG" 2>&1 &
     S_PID=$!
@@ -316,17 +319,20 @@ start_session() {
     return 0
 }
 
-# end_session: close stdin (harness exits), wait for agent-run's own cleanup.
+# end_session: SIGTERM agent-run and wait for its own cleanup, then release the
+# stdin hold. Stdin stays open until agent-run is gone: EOF would hand the primed
+# byte to the harness as a prompt.
 end_session() {
-    [[ -n "$S_HOLD" ]] && { kill "$S_HOLD" 2>/dev/null; wait "$S_HOLD" 2>/dev/null; }
+    kill -TERM "$S_PID" 2>/dev/null
     local i=0
     while [[ $i -lt 60 ]] && kill -0 "$S_PID" 2>/dev/null; do sleep 2; i=$((i + 1)); done
     if kill -0 "$S_PID" 2>/dev/null; then
-        echo "     agent-run did not exit after stdin closed; terminating (harness ignores EOF?)"
-        kill "$S_PID" 2>/dev/null
+        echo "     agent-run did not exit 120s after SIGTERM; killing it"
+        kill -KILL "$S_PID" 2>/dev/null
         [[ -n "$S_SANDBOX" ]] && openshell sandbox delete "$S_SANDBOX" >/dev/null 2>&1
     fi
     wait "$S_PID" 2>/dev/null
+    [[ -n "$S_HOLD" ]] && { kill "$S_HOLD" 2>/dev/null; wait "$S_HOLD" 2>/dev/null; }
     S_HOLD="" S_ALIVE=0
 }
 
@@ -751,8 +757,8 @@ run_cache() {
 # --- Cleanup ---
 # shellcheck disable=SC2329  # invoked via trap
 cleanup() {
-    [[ -n "$S_HOLD" ]] && kill "$S_HOLD" 2>/dev/null
     [[ -n "$S_PID" ]] && kill "$S_PID" 2>/dev/null
+    [[ -n "$S_HOLD" ]] && kill "$S_HOLD" 2>/dev/null
     if command -v openshell >/dev/null 2>&1 && [[ ${#SANDBOXES_SEEN[@]} -gt 0 ]]; then
         local sb
         for sb in "${SANDBOXES_SEEN[@]}"; do
