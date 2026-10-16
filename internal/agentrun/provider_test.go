@@ -45,7 +45,9 @@ func withMockExec(t *testing.T, fn func(mock *mockCmd)) {
 	origSilent := execCmdSilentFn
 	origOutput := execCmdOutputFn
 	origEnv := execCmdEnvFn
+	origInteractive := execInteractiveFn
 	defer func() {
+		execInteractiveFn = origInteractive
 		execCmdEnvFn = origEnv
 		execCmdFn = origCmd
 		execCmdSilentFn = origSilent
@@ -57,6 +59,7 @@ func withMockExec(t *testing.T, fn func(mock *mockCmd)) {
 	execCmdSilentFn = m.exec
 	execCmdOutputFn = m.defaultExecOutput
 	execCmdEnvFn = m.execEnv
+	execInteractiveFn = m.exec
 	fn(m)
 	assertNoSecretsInArgv(t, m)
 }

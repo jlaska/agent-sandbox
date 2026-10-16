@@ -40,6 +40,10 @@ func runFlow(t *testing.T, onExec func(joined string) (bool, error), fn func(f *
 	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "")
 	t.Setenv("GITHUB_TOKEN", "")
 
+	origTTY := stdinIsTerminal
+	stdinIsTerminal = func() bool { return true }
+	defer func() { stdinIsTerminal = origTTY }()
+
 	withMockExec(t, func(m *mockCmd) {
 		f := &flowMock{m: m, onExec: onExec}
 		m.execOutput = func(_ string, args ...string) (string, error) {
@@ -71,7 +75,7 @@ func runFlow(t *testing.T, onExec func(joined string) (bool, error), fn func(f *
 			}
 			return nil
 		}
-		execCmdFn, execCmdSilentFn = exec, exec
+		execCmdFn, execCmdSilentFn, execInteractiveFn = exec, exec, exec
 		captureStdout(t, func() { fn(f) })
 	})
 }
@@ -109,6 +113,45 @@ func countMatching(calls []string, sub string) int {
 		}
 	}
 	return n
+}
+
+// A piped stdin launches the harness without a PTY so it can read the pipe;
+// with a PTY `claude -p` sees a terminal and exits without reading its prompt.
+func TestRunPipedStdinLaunchesWithoutTTY(t *testing.T) {
+	runFlow(t, nil, func(f *flowMock) {
+		stdinIsTerminal = func() bool { return false }
+		if err := Run(flowConfig()); err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		calls := callStrings(f.m)
+		if indexMatching(calls, "--no-tty") < 0 {
+			t.Errorf("harness launch must use --no-tty for a piped stdin: %v", calls)
+		}
+		if indexMatching(calls, "--tty") >= 0 {
+			t.Errorf("harness launch must not force --tty for a piped stdin: %v", calls)
+		}
+	})
+}
+
+// Only the harness launch gets agent-run's stdin; preparation commands that
+// inherited it would drain a piped prompt before the harness starts.
+func TestRunOnlyHarnessLaunchGetsStdin(t *testing.T) {
+	runFlow(t, nil, func(f *flowMock) {
+		var interactive [][]string
+		execInteractiveFn = func(name string, args ...string) error {
+			interactive = append(interactive, append([]string{name}, args...))
+			return nil
+		}
+		if err := Run(flowConfig()); err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		if len(interactive) != 1 || !slices.Contains(interactive[0], "--workdir") {
+			t.Errorf("want exactly the harness launch with stdin, got %v", interactive)
+		}
+		if indexMatching(callStrings(f.m), "--workdir /sandbox/repo") >= 0 {
+			t.Errorf("harness launch ran without stdin: %v", callStrings(f.m))
+		}
+	})
 }
 
 // Narrowing is unconditional: with --no-mise it still runs, still before the

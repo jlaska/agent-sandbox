@@ -384,7 +384,7 @@ func run(ctx context.Context, cfg *Config) error {
 	launchCmd := buildLaunchCmd(harness, cfg)
 	// The harness's exit status is not an agent-run failure. If SIGINT/SIGTERM
 	// ended it, RunContext reports the interruption after cleanup.
-	_ = execCmd("openshell", "sandbox", "exec", "-n", sandboxName, "--workdir", "/sandbox/repo", "--tty", "--",
+	_ = execInteractive("openshell", "sandbox", "exec", "-n", sandboxName, "--workdir", "/sandbox/repo", ttyFlag(), "--",
 		"bash", "-c", launchCmd)
 
 	fmt.Println("\n[agent-run] Harness exited. Cleaning up...")
@@ -408,6 +408,25 @@ func buildCreateArgs(name, image, policyPath string, inferenceFlags, envFlags []
 		args = append(args, "--driver-config-json", driverConfigJSON)
 	}
 	return append(args, "--detach")
+}
+
+// stdinIsTerminal reports whether agent-run's stdin is a terminal; replaceable
+// in tests.
+var stdinIsTerminal = func() bool {
+	fi, err := os.Stdin.Stat()
+	return err == nil && fi.Mode()&os.ModeCharDevice != 0
+}
+
+// ttyFlag picks the PTY mode for the harness exec. An interactive run forces a
+// PTY (auto-detection misses it when stdout is redirected, and the TUI then
+// renders one character per line). A piped stdin must not get one: the harness
+// would see a terminal instead of the pipe, so `claude -p` exits with "Input
+// must be provided" instead of reading its prompt.
+func ttyFlag() string {
+	if stdinIsTerminal() {
+		return "--tty"
+	}
+	return "--no-tty"
 }
 
 // buildLaunchCmd builds the bash -c command that execs the harness.

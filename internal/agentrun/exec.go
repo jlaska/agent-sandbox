@@ -54,6 +54,11 @@ var (
 	// child's environment. It is how secrets reach `openshell provider create
 	// --credential KEY` (bare-key form) without appearing in argv.
 	execCmdEnvFn = defaultExecCmdEnv
+	// execInteractiveFn is execCmd with agent-run's stdin attached. Only the
+	// harness launch uses it: `openshell sandbox exec` forwards stdin into the
+	// sandbox, so any earlier command given it would drain input meant for the
+	// harness (`echo prompt | agent-run ... -- -p`).
+	execInteractiveFn = defaultExecInteractive
 )
 
 func execCmd(name string, args ...string) error {
@@ -61,6 +66,11 @@ func execCmd(name string, args ...string) error {
 }
 
 // execCmdEnv is execCmd with extra environment entries ("KEY=VALUE") for the child.
+// execInteractive runs the one command that gets agent-run's stdin.
+func execInteractive(name string, args ...string) error {
+	return execInteractiveFn(name, args...)
+}
+
 func execCmdEnv(env []string, name string, args ...string) error {
 	return execCmdEnvFn(env, name, args...)
 }
@@ -73,9 +83,9 @@ func execCmdOutput(name string, args ...string) (string, error) {
 	return execCmdOutputFn(name, args...)
 }
 
+// defaultExecCmd streams output but gives the child no stdin (/dev/null).
 func defaultExecCmd(name string, args ...string) error {
 	cmd := command(name, args...)
-	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
@@ -85,6 +95,13 @@ func defaultExecCmdEnv(env []string, name string, args ...string) error {
 	cmd := command(name, args...)
 	// Later entries win in os/exec, so env overrides any inherited duplicate.
 	cmd.Env = append(os.Environ(), env...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+func defaultExecInteractive(name string, args ...string) error {
+	cmd := command(name, args...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
