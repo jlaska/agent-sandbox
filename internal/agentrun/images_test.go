@@ -27,11 +27,17 @@ func TestResolveImageFrom(t *testing.T) {
 		}
 	})
 
-	t.Run("zero digest is unpublished", func(t *testing.T) {
-		_, err := resolveImageFrom([]byte(testImagesYAML), pi, "")
-		want := "image for pi not yet published; build locally (make images) and pass --image <ref>"
-		if err == nil || err.Error() != want {
-			t.Errorf("err = %v, want %q", err, want)
+	// Before Renovate pins the digest, the default run uses the version tag
+	// (with a warning) instead of failing for every user.
+	t.Run("zero digest falls back to the tag with a warning", func(t *testing.T) {
+		var got string
+		var err error
+		out := captureStdout(t, func() { got, err = resolveImageFrom([]byte(testImagesYAML), pi, "") })
+		if err != nil || got != "ghcr.io/jlaska/agent-pi:2.0.0" {
+			t.Errorf("got (%q, %v)", got, err)
+		}
+		if !strings.Contains(out, "WARNING: the pi image digest is not pinned yet") {
+			t.Errorf("out = %q", out)
 		}
 	})
 
@@ -78,12 +84,14 @@ func TestResolveImageFrom(t *testing.T) {
 // embedded images.yaml (published or not).
 func TestResolveImageEmbedded(t *testing.T) {
 	for _, name := range HarnessNames() {
-		ref, err := resolveImage(harnesses[name], "")
-		if err != nil && !strings.Contains(err.Error(), "not yet published") {
+		var ref string
+		var err error
+		out := captureStdout(t, func() { ref, err = resolveImage(harnesses[name], "") })
+		if err != nil {
 			t.Errorf("%s: %v", name, err)
 		}
-		if err == nil && !strings.Contains(ref, "@sha256:") {
-			t.Errorf("%s: embedded ref %q is not digest-pinned", name, ref)
+		if !strings.Contains(ref, "@sha256:") && !strings.Contains(out, "not pinned yet") {
+			t.Errorf("%s: embedded ref %q is neither digest-pinned nor warned about", name, ref)
 		}
 	}
 }

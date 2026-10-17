@@ -6,7 +6,9 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -17,6 +19,14 @@ type flowMock struct {
 	m      *mockCmd
 	sbName string
 	onExec func(joined string) (handled bool, err error)
+	// execs records each execCmd/execCmdSilent/execInteractive call with the
+	// context it ran under.
+	execs []execRecord
+}
+
+type execRecord struct {
+	cmd string
+	ctx context.Context
 }
 
 // runFlow installs flow mocks (policy fixtures, a Ready sandbox list, empty
@@ -53,8 +63,8 @@ func runFlow(t *testing.T, onExec func(joined string) (bool, error), fn func(f *
 				return "openshell 0.1.4\n", nil
 			case strings.Contains(joined, "list-profiles"):
 				return "[]", nil
-			case joined == "sandbox list":
-				return f.sbName + " Ready\n", nil
+			case f.sbName != "" && joined == "sandbox get "+f.sbName+" -o json":
+				return `{"name":"` + f.sbName + `","phase":"Ready"}`, nil
 			case strings.Contains(joined, "policy get") && strings.Contains(joined, "--full"):
 				return eff, nil
 			case strings.Contains(joined, "policy get") && strings.Contains(joined, "--rev 3"):
@@ -62,8 +72,9 @@ func runFlow(t *testing.T, onExec func(joined string) (bool, error), fn func(f *
 			}
 			return "", nil
 		}
-		exec := func(name string, args ...string) error {
+		exec := func(ctx context.Context, name string, args ...string) error {
 			m.calls = append(m.calls, append([]string{name}, args...))
+			f.execs = append(f.execs, execRecord{name + " " + strings.Join(args, " "), ctx})
 			joined := strings.Join(args, " ")
 			if i := slices.Index(args, "--name"); i >= 0 && strings.HasPrefix(joined, "sandbox create") {
 				f.sbName = args[i+1]
@@ -138,7 +149,7 @@ func TestRunPipedStdinLaunchesWithoutTTY(t *testing.T) {
 func TestRunOnlyHarnessLaunchGetsStdin(t *testing.T) {
 	runFlow(t, nil, func(f *flowMock) {
 		var interactive [][]string
-		execInteractiveFn = func(name string, args ...string) error {
+		execInteractiveFn = func(_ context.Context, name string, args ...string) error {
 			interactive = append(interactive, append([]string{name}, args...))
 			return nil
 		}
@@ -302,16 +313,14 @@ func TestRunNarrowingFailureDeletesOnce(t *testing.T) {
 	})
 }
 
-// The default exec functions honour the child context: a running child gets
-// SIGTERM when it is cancelled, new children refuse to start, and restoring
-// the background context lets cleanup commands run.
-func TestChildContext(t *testing.T) {
+// The default exec functions honour their context: a running child gets
+// SIGTERM when it is cancelled, new children refuse to start, and a detached
+// context lets cleanup commands run after cancellation.
+func TestExecContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	restore := setChildContext(ctx)
-	defer restore()
 
 	done := make(chan error, 1)
-	go func() { done <- defaultExecCmdSilent("sleep", "30") }()
+	go func() { done <- defaultExecCmdSilent(ctx, "sleep", "30") }()
 	time.Sleep(200 * time.Millisecond)
 	cancel()
 	select {
@@ -322,20 +331,104 @@ func TestChildContext(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("child was not terminated on cancel")
 	}
-	if err := defaultExecCmdSilent("true"); err == nil {
+	if err := defaultExecCmdSilent(ctx, "true"); err == nil {
 		t.Error("a new child must not start under a cancelled context")
 	}
-	restore()
-	if err := defaultExecCmdSilent("true"); err != nil {
-		t.Errorf("after restore children must run: %v", err)
+	if err := defaultExecCmdSilent(detached(ctx), "true"); err != nil {
+		t.Errorf("a detached context must run children after cancel: %v", err)
 	}
+}
+
+// Cleanup children run in their own process group, so a second Ctrl-C at the
+// terminal (delivered to the whole foreground group) cannot kill them; normal
+// children stay in agent-run's group.
+func TestDetachedChildOwnProcessGroup(t *testing.T) {
+	pgid := func(ctx context.Context) int {
+		t.Helper()
+		out, err := defaultExecCmdOutput(ctx, "sh", "-c", "ps -o pgid= -p $$")
+		if err != nil {
+			t.Fatal(err)
+		}
+		n, err := strconv.Atoi(strings.TrimSpace(out))
+		if err != nil {
+			t.Fatalf("pgid %q: %v", out, err)
+		}
+		return n
+	}
+	own := syscall.Getpgrp()
+	if got := pgid(context.Background()); got != own {
+		t.Errorf("normal child pgid = %d, want agent-run's %d", got, own)
+	}
+	if got := pgid(detached(context.Background())); got == own {
+		t.Errorf("detached child shares agent-run's process group %d", own)
+	}
+}
+
+// A signal during the run must not leave cleanup running under the cancelled
+// context: every cleanup command gets a live, detached one.
+func TestRunCleanupAfterInterruptUsesDetachedContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	onExec := func(joined string) (bool, error) {
+		if strings.Contains(joined, "git clone") {
+			cancel() // Ctrl-C arrives mid-run
+			return true, errors.New("signal: terminated")
+		}
+		return false, nil
+	}
+	runFlow(t, onExec, func(f *flowMock) {
+		err := RunContext(ctx, flowConfig())
+		if !errors.Is(err, ErrInterrupted) {
+			t.Fatalf("err = %v, want ErrInterrupted", err)
+		}
+		clone := slices.IndexFunc(f.execs, func(r execRecord) bool { return strings.Contains(r.cmd, "git clone") })
+		if clone < 0 {
+			t.Fatal("clone never ran")
+		}
+		var deletes int
+		for _, r := range f.execs[clone+1:] {
+			if strings.Contains(r.cmd, "sandbox delete") || strings.Contains(r.cmd, "provider delete") {
+				if strings.Contains(r.cmd, "sandbox delete") {
+					deletes++
+				}
+				if r.ctx.Err() != nil || r.ctx.Value(detachedKey{}) == nil {
+					t.Errorf("cleanup %q ran under a cancelled or non-detached context", r.cmd)
+				}
+			}
+		}
+		if deletes != 1 {
+			t.Errorf("sandbox deletes = %d, want 1", deletes)
+		}
+	})
+}
+
+// A signal that breaks narrowing must not break the fail-closed delete.
+func TestEnforceNarrowingFailClosedAfterInterrupt(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	withMockExec(t, func(m *mockCmd) {
+		var deleteCtx context.Context
+		execCmdFn = func(c context.Context, name string, args ...string) error {
+			m.calls = append(m.calls, append([]string{name}, args...))
+			cancel()
+			return errors.New("signal: terminated")
+		}
+		execCmdSilentFn = func(c context.Context, name string, args ...string) error {
+			m.calls = append(m.calls, append([]string{name}, args...))
+			deleteCtx = c
+			return c.Err()
+		}
+		var res narrowOutcome
+		captureStdout(t, func() { res, _ = enforceNarrowing(ctx, &Config{}, "sb", nil) })
+		if !res.SandboxDeleted || deleteCtx == nil || deleteCtx.Err() != nil {
+			t.Errorf("fail-closed delete did not run under a live context: res=%+v", res)
+		}
+	})
 }
 
 func TestDefaultExecCmdEnv(t *testing.T) {
 	t.Setenv("AGENT_RUN_TEST_SECRET", "from-parent")
 	// The extra env wins over the inherited value and is visible to the child
 	// only; success is the child's own check.
-	if err := defaultExecCmdEnv([]string{"AGENT_RUN_TEST_SECRET=from-env-seam"}, "sh", "-c",
+	if err := defaultExecCmdEnv(context.Background(), []string{"AGENT_RUN_TEST_SECRET=from-env-seam"}, "sh", "-c",
 		`[ "$AGENT_RUN_TEST_SECRET" = from-env-seam ]`); err != nil {
 		t.Errorf("env not passed to child: %v", err)
 	}

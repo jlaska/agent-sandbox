@@ -1,6 +1,7 @@
 package agentrun
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -450,7 +451,7 @@ func narrowMock(t *testing.T, effective, rev string, updateErr error) func(*mock
 			t.Errorf("unexpected output call: %s", joined)
 			return "", nil
 		}
-		execErr := func(name string, args ...string) error {
+		execErr := func(_ context.Context, name string, args ...string) error {
 			m.calls = append(m.calls, append([]string{name}, args...))
 			if strings.Contains(strings.Join(args, " "), "policy update") && updateErr != nil {
 				return updateErr
@@ -473,7 +474,7 @@ func TestNarrowPolicyCommandSequence(t *testing.T) {
 	withMockExec(t, func(m *mockCmd) {
 		narrowMock(t, "policy-get-effective-clean.json", "policy-rev-loaded.json", nil)(m)
 		var err error
-		captureStdout(t, func() { err = narrowPolicy(&Config{}, "sb1") })
+		captureStdout(t, func() { err = narrowPolicy(context.Background(), &Config{}, "sb1") })
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -502,7 +503,7 @@ func TestVerifyNarrowedRejections(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			withMockExec(t, func(m *mockCmd) {
 				narrowMock(t, tt.effective, tt.rev, nil)(m)
-				_, err := verifyNarrowed("sb1")
+				_, err := verifyNarrowed(context.Background(), "sb1")
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 					t.Errorf("err = %v, want containing %q", err, tt.wantErr)
 				}
@@ -518,7 +519,7 @@ func TestVerifyNarrowedRejections(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			withMockExec(t, func(m *mockCmd) {
 				m.execOutput = func(string, ...string) (string, error) { return tt.body, nil }
-				if _, err := verifyNarrowed("sb1"); err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				if _, err := verifyNarrowed(context.Background(), "sb1"); err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 					t.Errorf("err = %v, want containing %q", err, tt.wantErr)
 				}
 			})
@@ -527,7 +528,7 @@ func TestVerifyNarrowedRejections(t *testing.T) {
 	t.Run("garbage output", func(t *testing.T) {
 		withMockExec(t, func(m *mockCmd) {
 			m.execOutput = func(string, ...string) (string, error) { return "not json", nil }
-			if _, err := verifyNarrowed("sb1"); err == nil {
+			if _, err := verifyNarrowed(context.Background(), "sb1"); err == nil {
 				t.Error("expected parse error")
 			}
 		})
@@ -540,7 +541,7 @@ func TestVerifyNarrowedRejections(t *testing.T) {
 				o, e := orig(n, a...)
 				return "warning: something\n" + o + "\ntrailer\n", e
 			}
-			if v, err := verifyNarrowed("sb1"); err != nil || v != 3 {
+			if v, err := verifyNarrowed(context.Background(), "sb1"); err != nil || v != 3 {
 				t.Errorf("v=%d err=%v", v, err)
 			}
 		})
@@ -572,7 +573,7 @@ func TestEnforceNarrowingFailsClosed(t *testing.T) {
 			withMockExec(t, func(m *mockCmd) {
 				narrowMock(t, "policy-get-effective-clean.json", tt.rev, tt.updateErr)(m)
 				var err error
-				captureStdout(t, func() { _, err = enforceNarrowing(&Config{}, "sb1", tt.cred) })
+				captureStdout(t, func() { _, err = enforceNarrowing(context.Background(), &Config{}, "sb1", tt.cred) })
 				if err == nil || !strings.Contains(err.Error(), "agent not launched") {
 					t.Fatalf("expected fail-closed error, got %v", err)
 				}
@@ -591,7 +592,7 @@ func TestEnforceNarrowingFailsClosed(t *testing.T) {
 		withMockExec(t, func(m *mockCmd) {
 			narrowMock(t, "policy-get-effective-clean.json", "policy-rev-loaded.json", nil)(m)
 			captureStdout(t, func() {
-				if _, err := enforceNarrowing(&Config{}, "sb1", app); err != nil {
+				if _, err := enforceNarrowing(context.Background(), &Config{}, "sb1", app); err != nil {
 					t.Fatal(err)
 				}
 			})

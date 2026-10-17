@@ -101,11 +101,25 @@ ENV MISE_DATA_DIR=/sandbox/.mise-cache/data \
     MISE_CONFIG_DIR=/sandbox/.config/mise \
     PATH=/sandbox/.mise-cache/data/shims:$PATH
 
+# Dependency cooldown: package versions published less than DEP_COOLDOWN_DAYS ago are not
+# installed, so a freshly published malicious release has time to be caught and yanked first.
+#   npm   min-release-age (days, npm >= 11.10) in the global npmrc ($PREFIX/etc/npmrc; root-owned)
+#   uv    UV_EXCLUDE_NEWER relative duration (uv >= 0.9.17; also covers mise's pipx: backend)
+#   mise  MISE_MINIMUM_RELEASE_AGE for the tool versions mise resolves (exact pins bypass it)
+# Per-command opt-out: npm --min-release-age=0, uv --exclude-newer false, mise --minimum-release-age 0s.
+ARG DEP_COOLDOWN_DAYS=3
+ENV MISE_MINIMUM_RELEASE_AGE=${DEP_COOLDOWN_DAYS}d \
+    UV_EXCLUDE_NEWER="${DEP_COOLDOWN_DAYS} days"
+RUN install -d /usr/local/etc \
+    && printf 'min-release-age=%s\n' "${DEP_COOLDOWN_DAYS}" > /usr/local/etc/npmrc \
+    && [ "$(npm config get min-release-age)" = "${DEP_COOLDOWN_DAYS}" ]
+
 # Login shells (sandbox exec uses bash -lc) reset PATH via /etc/profile, so re-export the shims.
 # hadolint ignore=SC2016
 RUN printf '%s\n' \
         'export PATH="/sandbox/.mise-cache/data/shims:$PATH"' \
         'export MISE_DATA_DIR=/sandbox/.mise-cache/data MISE_CACHE_DIR=/sandbox/.mise-cache/cache MISE_CONFIG_DIR=/sandbox/.config/mise' \
+        "export MISE_MINIMUM_RELEASE_AGE=${DEP_COOLDOWN_DAYS}d UV_EXCLUDE_NEWER='${DEP_COOLDOWN_DAYS} days'" \
         > /sandbox/.bashrc \
     && printf '%s\n' '[ -f ~/.bashrc ] && . ~/.bashrc' > /sandbox/.profile \
     && chown sandbox:sandbox /sandbox/.bashrc /sandbox/.profile

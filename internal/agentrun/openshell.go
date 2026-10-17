@@ -1,6 +1,7 @@
 package agentrun
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -8,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"gopkg.in/yaml.v3"
 
@@ -60,8 +62,8 @@ func parseOpenShellVersion(out string) (semver, error) {
 
 // checkOpenShellVersion runs `openshell --version` and requires >= MinOpenShellVersion.
 // It returns the detected version string even when the gate fails.
-func checkOpenShellVersion() (string, error) {
-	out, err := execCmdOutput("openshell", "--version")
+func checkOpenShellVersion(ctx context.Context) (string, error) {
+	out, err := execCmdOutput(ctx, "openshell", "--version")
 	if err != nil {
 		return "", fmt.Errorf("failed to run 'openshell --version': %w", err)
 	}
@@ -89,34 +91,38 @@ var profileFiles = map[string]string{
 	"anthropic":         "providers/anthropic.yaml",
 }
 
-// profileInstalled reports whether `openshell provider list-profiles` already
-// shows the profile id. It prefers the JSON form (an array of objects with an
-// "id" field) and falls back to a whole-word match on the table output.
-func profileInstalled(id string) bool {
-	if out, err := execCmdOutput("openshell", "provider", "list-profiles", "-o", "json"); err == nil {
+// installedProfiles returns the profile ids `openshell provider list-profiles`
+// shows, listed once per run. It prefers the JSON form (an array of objects
+// with an "id" field) and falls back to the table output, where any
+// whitespace- or '|'-separated token counts (ids are whole tokens, so
+// "claude-code-extra" never matches "claude-code").
+func installedProfiles(ctx context.Context) map[string]bool {
+	ids := map[string]bool{}
+	if out, err := execCmdOutput(ctx, "openshell", "provider", "list-profiles", "-o", "json"); err == nil {
 		var entries []struct {
 			ID string `json:"id"`
 		}
 		if json.Unmarshal([]byte(out), &entries) == nil {
 			for _, e := range entries {
-				if e.ID == id {
-					return true
-				}
+				ids[e.ID] = true
 			}
-			return false
+			return ids
 		}
 	}
-	out, _ := execCmdOutput("openshell", "provider", "list-profiles")
-	return regexp.MustCompile(`(^|[\s|])` + regexp.QuoteMeta(id) + `($|[\s|])`).MatchString(out)
+	out, _ := execCmdOutput(ctx, "openshell", "provider", "list-profiles")
+	for _, tok := range strings.FieldsFunc(out, func(r rune) bool { return r == '|' || unicode.IsSpace(r) }) {
+		ids[tok] = true
+	}
+	return ids
 }
 
 // ensureProfile imports a provider profile from the embedded FS unless the
-// gateway already has it. OpenShell 0.1.4 ships no built-in profiles, so
-// `provider create --type <id>` fails until the profile is imported. If the
-// gateway already has the id (for example the stock upstream `anthropic`
-// profile, whose binaries name only curl), its `binaries` are compared with
-// ours and the profile is updated when they differ.
-func ensureProfile(id string) error {
+// gateway already has it (installed). OpenShell 0.1.4 ships no built-in
+// profiles, so `provider create --type <id>` fails until the profile is
+// imported. If the gateway already has the id (for example the stock upstream
+// `anthropic` profile, whose binaries name only curl, or an older import of
+// ours), it is compared with the desired document and updated when it differs.
+func ensureProfile(ctx context.Context, id string, installed bool) error {
 	path, ok := profileFiles[id]
 	if !ok {
 		return fmt.Errorf("unknown provider profile %q", id)
@@ -125,8 +131,8 @@ func ensureProfile(id string) error {
 	if err != nil {
 		return err
 	}
-	if profileInstalled(id) {
-		return reconcileProfile(id, data)
+	if installed {
+		return reconcileProfile(ctx, id, data)
 	}
 	tmp, cleanup, err := stageProfile(id, data)
 	if err != nil {
@@ -134,7 +140,7 @@ func ensureProfile(id string) error {
 	}
 	defer cleanup()
 	fmt.Printf("[agent-run] Importing provider profile %s...\n", id)
-	if err := execCmd("openshell", "provider", "profile", "import", "--file", tmp); err != nil {
+	if err := execCmd(ctx, "openshell", "provider", "profile", "import", "--file", tmp); err != nil {
 		return fmt.Errorf("failed to import %s provider profile: %w", id, err)
 	}
 	return nil
@@ -158,40 +164,43 @@ func stageProfile(id string, data []byte) (path string, cleanup func(), err erro
 	return tmp.Name(), cleanup, nil
 }
 
-// reconcileProfile updates an installed profile whose binaries differ from the
-// desired document. `provider profile export <id> -o json` supplies the current
-// binaries and resource_version; `provider profile update <id> -f` requires that
-// non-zero resource_version (server handle_update_provider_profiles, v0.1.4
+// reconcileProfile updates an installed profile that differs from the desired
+// document in any field it sets (credentials and their env_vars, endpoints,
+// binaries, ...), not just binaries: a stale credential env_var makes 0.1.4
+// reject `provider create --credential KEY`, and stale endpoints would not
+// match the policy. Fields the gateway adds (resource_version, timestamps,
+// defaults) are ignored. `provider profile export <id> -o json` supplies the
+// current document and resource_version; `provider profile update <id> -f`
+// requires that non-zero resource_version (server
+// handle_update_provider_profiles, v0.1.4
 // crates/openshell-server/src/grpc/provider.rs). Problems here are warnings:
 // the run continues with the profile as the gateway has it.
-func reconcileProfile(id string, desired []byte) error {
-	var want struct {
-		Binaries []string `yaml:"binaries"`
-	}
+func reconcileProfile(ctx context.Context, id string, desired []byte) error {
+	var want any
 	if err := yaml.Unmarshal(desired, &want); err != nil {
 		return fmt.Errorf("failed to parse embedded profile %s: %w", id, err)
 	}
-	out, err := execCmdOutput("openshell", "provider", "profile", "export", id, "-o", "json")
+	want, err := normalizeJSON(want)
 	if err != nil {
-		fmt.Printf("[agent-run] WARN: could not export provider profile %s to check its binaries: %v\n", id, err)
+		return fmt.Errorf("failed to parse embedded profile %s: %w", id, err)
+	}
+	out, err := execCmdOutput(ctx, "openshell", "provider", "profile", "export", id, "-o", "json")
+	if err != nil {
+		fmt.Printf("[agent-run] WARN: could not export provider profile %s to compare it: %v\n", id, err)
 		return nil
 	}
-	var have struct {
-		ResourceVersion uint64   `json:"resource_version"`
-		Binaries        []string `json:"binaries"`
-	}
+	var have map[string]any
 	if json.Unmarshal([]byte(extractJSONObject(out)), &have) != nil {
 		fmt.Printf("[agent-run] WARN: could not parse exported provider profile %s; leaving it as is\n", id)
 		return nil
 	}
-	a, b := slices.Clone(want.Binaries), slices.Clone(have.Binaries)
-	slices.Sort(a)
-	slices.Sort(b)
-	if slices.Equal(a, b) {
+	diff := profileDiff("", want, have)
+	if len(diff) == 0 {
 		return nil
 	}
-	if have.ResourceVersion == 0 {
-		fmt.Printf("[agent-run] WARN: provider profile %s has different binaries than agent-run expects but no resource_version; leaving it as is\n", id)
+	rv, _ := have["resource_version"].(float64)
+	if rv <= 0 {
+		fmt.Printf("[agent-run] WARN: provider profile %s differs from agent-run's (%s) but has no resource_version; leaving it as is\n", id, strings.Join(diff, ", "))
 		return nil
 	}
 	var doc yaml.Node
@@ -201,7 +210,7 @@ func reconcileProfile(id string, desired []byte) error {
 	root := doc.Content[0]
 	root.Content = append(root.Content,
 		&yaml.Node{Kind: yaml.ScalarNode, Value: "resource_version"},
-		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!int", Value: strconv.FormatUint(have.ResourceVersion, 10)})
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!int", Value: strconv.FormatUint(uint64(rv), 10)})
 	updated, err := yaml.Marshal(&doc)
 	if err != nil {
 		return fmt.Errorf("failed to render profile %s: %w", id, err)
@@ -211,18 +220,107 @@ func reconcileProfile(id string, desired []byte) error {
 		return err
 	}
 	defer cleanup()
-	fmt.Printf("[agent-run] Updating provider profile %s (binaries %v -> %v)...\n", id, have.Binaries, want.Binaries)
-	if err := execCmd("openshell", "provider", "profile", "update", id, "--file", tmp); err != nil {
-		fmt.Printf("[agent-run] WARN: could not update provider profile %s: %v (sandboxes attached to it block updates; the stale binaries may deny %v)\n", id, err, want.Binaries)
+	fmt.Printf("[agent-run] Updating provider profile %s (differs in: %s)...\n", id, strings.Join(diff, ", "))
+	if err := execCmd(ctx, "openshell", "provider", "profile", "update", id, "--file", tmp); err != nil {
+		fmt.Printf("[agent-run] WARN: could not update provider profile %s: %v (sandboxes attached to it block updates; the stale profile may reject credentials or deny traffic)\n", id, err)
 	}
 	return nil
 }
 
-// ensureProfiles imports every profile the run needs (github-agent plus the
-// harness's own, as resolved for this run by Harness.ProvidersFor).
-func ensureProfiles(harnessProfiles []string) error {
+// normalizeJSON round-trips v through JSON so YAML- and JSON-decoded values
+// compare alike (numbers become float64, maps map[string]any).
+func normalizeJSON(v any) (any, error) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	var out any
+	err = json.Unmarshal(b, &out)
+	return out, err
+}
+
+// profileDiff returns the paths at which want is not contained in have: every
+// map key want sets must match (extra keys in have are ignored), lists must
+// have the same length with each element contained in its counterpart, and
+// lists of scalars compare as sets (binaries order does not matter).
+func profileDiff(path string, want, have any) []string {
+	at := path
+	if at == "" {
+		at = "(root)"
+	}
+	switch w := want.(type) {
+	case map[string]any:
+		h, ok := have.(map[string]any)
+		if !ok {
+			return []string{at}
+		}
+		var diff []string
+		keys := make([]string, 0, len(w))
+		for k := range w {
+			keys = append(keys, k)
+		}
+		slices.Sort(keys)
+		for _, k := range keys {
+			p := k
+			if path != "" {
+				p = path + "." + k
+			}
+			diff = append(diff, profileDiff(p, w[k], h[k])...)
+		}
+		return diff
+	case []any:
+		h, ok := have.([]any)
+		if !ok || len(h) != len(w) {
+			return []string{at}
+		}
+		if scalars(w) && scalars(h) {
+			a, b := scalarStrings(w), scalarStrings(h)
+			slices.Sort(a)
+			slices.Sort(b)
+			if !slices.Equal(a, b) {
+				return []string{at}
+			}
+			return nil
+		}
+		for i := range w {
+			if len(profileDiff(fmt.Sprintf("%s[%d]", path, i), w[i], h[i])) > 0 {
+				return []string{at}
+			}
+		}
+		return nil
+	default:
+		if fmt.Sprint(want) != fmt.Sprint(have) || (want == nil) != (have == nil) {
+			return []string{at}
+		}
+		return nil
+	}
+}
+
+func scalars(l []any) bool {
+	for _, v := range l {
+		switch v.(type) {
+		case map[string]any, []any:
+			return false
+		}
+	}
+	return true
+}
+
+func scalarStrings(l []any) []string {
+	out := make([]string, len(l))
+	for i, v := range l {
+		out[i] = fmt.Sprint(v)
+	}
+	return out
+}
+
+// ensureProfiles imports or reconciles every profile the run needs
+// (github-agent plus the harness's own, as resolved for this run by
+// Harness.Providers), listing the gateway's profiles once.
+func ensureProfiles(ctx context.Context, harnessProfiles []string) error {
+	installed := installedProfiles(ctx)
 	for _, id := range append([]string{GitHubProviderName}, harnessProfiles...) {
-		if err := ensureProfile(id); err != nil {
+		if err := ensureProfile(ctx, id, installed[id]); err != nil {
 			return err
 		}
 	}
@@ -235,11 +333,11 @@ const driverUnknown = "unknown"
 // detectDriver returns the gateway's compute driver: the --driver override if
 // set, else the first compute driver reported by `openshell gateway info -o json`
 // (compute_drivers[0].name), else "unknown".
-func detectDriver(override string) string {
+func detectDriver(ctx context.Context, override string) string {
 	if override != "" {
 		return override
 	}
-	out, err := execCmdOutput("openshell", "gateway", "info", "-o", "json")
+	out, err := execCmdOutput(ctx, "openshell", "gateway", "info", "-o", "json")
 	if err != nil {
 		return driverUnknown
 	}

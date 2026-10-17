@@ -8,6 +8,9 @@ FROM ${BASE_IMAGE}
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
+# The base image's npm cooldown (min-release-age, DEP_COOLDOWN_DAYS) applies to these exact pins:
+# a version younger than the cooldown fails the build with ETARGET. Renovate waits the same
+# 3 days (minimumReleaseAge in .github/renovate.json5) before proposing a bump.
 # renovate: datasource=npm depName=@earendil-works/pi-coding-agent
 ARG PI_VERSION=1.3.0
 # renovate: datasource=npm depName=pi-provider-litellm

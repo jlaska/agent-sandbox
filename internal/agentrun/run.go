@@ -2,6 +2,7 @@ package agentrun
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -22,7 +23,7 @@ const (
 
 	GitHubProviderName = "github-agent"
 
-	SandboxReadyTimeout = 30 * time.Second
+	SandboxReadyTimeout = 10 * time.Minute
 	SandboxReadyPoll    = 1 * time.Second
 )
 
@@ -57,7 +58,7 @@ func run(ctx context.Context, cfg *Config) error {
 	}
 
 	if cfg.Diag {
-		return printDiagnostics(cfg)
+		return printDiagnostics(ctx, cfg)
 	}
 
 	if cfg.RevokeToken != "" {
@@ -87,6 +88,12 @@ func run(ctx context.Context, cfg *Config) error {
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
+	// Resolve per-run harness options once (the opencode backend, which needs
+	// a usable key) before anything is created.
+	opts, err := resolveHarnessOptions(cfg.Harness, cfg)
+	if err != nil {
+		return err
+	}
 
 	// Find repo root for templates/profiles
 	repoRoot := findRepoRoot()
@@ -99,9 +106,6 @@ func run(ctx context.Context, cfg *Config) error {
 		providersCreated []string
 	)
 
-	// From here on children run under ctx; the cleanup below restores a
-	// background context first so its own commands are not cancelled.
-	restoreChildCtx := setChildContext(ctx)
 	// interrupted is checked between steps; children also fail fast once ctx
 	// is cancelled, but the mocked/ignored-error steps need an explicit check.
 	interrupted := func() error {
@@ -115,14 +119,16 @@ func run(ctx context.Context, cfg *Config) error {
 	// (the signal only cancels ctx; it never skips this deferred function).
 	var cleanupOnce sync.Once
 	defer cleanupOnce.Do(func() {
-		restoreChildCtx()
+		// Cleanup must finish even after a signal cancelled ctx, and a second
+		// Ctrl-C must not reach its children (see detached).
+		ctx := detached(ctx)
 		fmt.Println("--- Cleanup ---")
-		if ctx.Err() != nil {
+		if interrupted() != nil {
 			fmt.Println("  Interrupted by signal.")
 		}
 		if cleanupSandbox != "" {
 			fmt.Printf("  Deleting sandbox: %s ... ", cleanupSandbox)
-			if err := execCmdSilent("openshell", "sandbox", "delete", cleanupSandbox); err != nil {
+			if err := execCmdSilent(ctx, "openshell", "sandbox", "delete", cleanupSandbox); err != nil {
 				fmt.Printf("warning: %v (delete it manually: openshell sandbox delete %s)\n", err, cleanupSandbox)
 			} else {
 				fmt.Println("done")
@@ -138,7 +144,7 @@ func run(ctx context.Context, cfg *Config) error {
 		}
 		for _, prov := range providersCreated {
 			fmt.Printf("  Deleting provider: %s ... ", prov)
-			_ = execCmdSilent("openshell", "provider", "delete", prov)
+			_ = execCmdSilent(ctx, "openshell", "provider", "delete", prov)
 			fmt.Println("done")
 		}
 		fmt.Println("  Cleanup complete.")
@@ -157,13 +163,13 @@ func run(ctx context.Context, cfg *Config) error {
 
 	// Step 1: Require a supported OpenShell CLI, then verify the gateway
 	fmt.Println("[agent-run] Checking OpenShell version...")
-	osVersion, err := checkOpenShellVersion()
+	osVersion, err := checkOpenShellVersion(ctx)
 	if err != nil {
 		return err
 	}
 	fmt.Printf("[agent-run] OpenShell:  %s (>= %s)\n", osVersion, MinOpenShellVersion)
 	fmt.Println("[agent-run] Checking OpenShell gateway...")
-	if err := execCmdSilent("openshell", "status"); err != nil {
+	if err := execCmdSilent(ctx, "openshell", "status"); err != nil {
 		return fmt.Errorf("OpenShell gateway is not running")
 	}
 
@@ -205,12 +211,7 @@ func run(ctx context.Context, cfg *Config) error {
 
 	// Step 3: Ensure provider profiles are imported (0.1.4 has no built-ins)
 	fmt.Println("[agent-run] Ensuring provider profiles...")
-	opts := HarnessOptions{Inference: cfg.Inference, Model: cfg.Model, ExplicitEnv: cfg.EnvVars}
-	harnessProfiles, err := harness.ProvidersFor(opts)
-	if err != nil {
-		return err
-	}
-	if err := ensureProfiles(harnessProfiles); err != nil {
+	if err := ensureProfiles(ctx, harness.Providers(opts)); err != nil {
 		return err
 	}
 
@@ -220,11 +221,11 @@ func run(ctx context.Context, cfg *Config) error {
 
 	// Step 4: Create providers (GitHub + inference)
 	fmt.Println("[agent-run] Creating GitHub provider...")
-	_ = execCmd("openshell", "provider", "delete", GitHubProviderName)
+	_ = execCmd(ctx, "openshell", "provider", "delete", GitHubProviderName)
 	// The github-agent profile declares GITHUB_TOKEN and GH_TOKEN; 0.1.4 only
 	// accepts those as stored keys, and the sandbox gets a placeholder under
 	// each name (gh reads GH_TOKEN first, then GITHUB_TOKEN).
-	if err := createProvider(GitHubProviderName, "github-agent", []credentialPair{
+	if err := createProvider(ctx, GitHubProviderName, "github-agent", []credentialPair{
 		{"GITHUB_TOKEN", cred.Token},
 		{"GH_TOKEN", cred.Token},
 	}); err != nil {
@@ -232,14 +233,14 @@ func run(ctx context.Context, cfg *Config) error {
 	}
 	providersCreated = append(providersCreated, GitHubProviderName)
 
-	inferenceFlags, inferenceProviders, err := createInferenceProvidersFor(cfg.Harness, cfg.Inference, cfg.EnvVars)
+	inferenceFlags, inferenceProviders, err := createInferenceProviders(ctx, cfg.Harness, opts)
 	if err != nil {
 		return fmt.Errorf("failed to create inference providers: %w", err)
 	}
 	providersCreated = append(providersCreated, inferenceProviders...)
 
 	// Resolve inference env vars
-	envFlags := resolveInferenceEnv(cfg.Harness, cfg.EnvVars)
+	envFlags := resolveInferenceEnv(cfg.Harness, opts)
 	if len(envFlags) > 0 {
 		fmt.Printf("[agent-run] Forwarding %d inference env var(s) to sandbox.\n", len(envFlags)/2)
 	}
@@ -261,8 +262,8 @@ func run(ctx context.Context, cfg *Config) error {
 	}
 
 	// Step 6: Prepare the per-repo mise cache (degrades to none on problems)
-	driver := detectDriver(cfg.Driver)
-	cache, err := prepareCache(cfg, driver)
+	driver := detectDriver(ctx, cfg.Driver)
+	cache, err := prepareCache(ctx, cfg, driver)
 	if err != nil {
 		return err
 	}
@@ -277,7 +278,7 @@ func run(ctx context.Context, cfg *Config) error {
 		return buildCreateArgs(sandboxName, image, policyTmp, inferenceFlags, envFlags, driverConfigJSON)
 	}
 	cleanupSandbox = sandboxName
-	if err := createSandbox(sandboxName, buildArgs, cache); err != nil {
+	if err := createSandbox(ctx, sandboxName, buildArgs, cache); err != nil {
 		return fmt.Errorf("failed to create sandbox: %w", err)
 	}
 
@@ -295,11 +296,8 @@ func run(ctx context.Context, cfg *Config) error {
 		return err
 	}
 
-	// Step 8: Map provider credentials to harness env vars + pre-seed config
-	if err := harness.InitHookFor(opts)(sandboxName); err != nil {
-		return fmt.Errorf("sandbox credential setup failed: %w", err)
-	}
-	if err := harness.PreseedFor(opts)(sandboxName); err != nil {
+	// Step 8: Pre-seed harness config
+	if err := harness.Preseed(ctx, sandboxName, opts); err != nil {
 		return fmt.Errorf("harness config setup failed: %w", err)
 	}
 
@@ -310,7 +308,7 @@ func run(ctx context.Context, cfg *Config) error {
 	// Step 9a: Configure global git credential helper (must happen before clone for private repos)
 	fmt.Println("[agent-run] Configuring Git credentials...")
 	credHelper := `git config --global credential.helper '!f() { echo "username=x-access-token"; echo "password=${GH_TOKEN:-$GITHUB_TOKEN}"; }; f'`
-	if err := execCmd("openshell", "sandbox", "exec", "-n", sandboxName, "--", "sh", "-c", credHelper); err != nil {
+	if err := execCmd(ctx, "openshell", "sandbox", "exec", "-n", sandboxName, "--", "sh", "-c", credHelper); err != nil {
 		return fmt.Errorf("git credential setup failed: %w", err)
 	}
 
@@ -320,7 +318,7 @@ func run(ctx context.Context, cfg *Config) error {
 
 	// Step 9b: Clone repository
 	fmt.Printf("[agent-run] Cloning %s...\n", cfg.Repo)
-	if err := execCmd("openshell", "sandbox", "exec", "-n", sandboxName, "--",
+	if err := execCmd(ctx, "openshell", "sandbox", "exec", "-n", sandboxName, "--",
 		"git", "clone", fmt.Sprintf("https://github.com/%s.git", cfg.Repo), "/sandbox/repo"); err != nil {
 		return fmt.Errorf("clone failed: %w", err)
 	}
@@ -338,7 +336,7 @@ func run(ctx context.Context, cfg *Config) error {
 		git config commit.gpgsign false
 		git config tag.gpgsign false
 	`, GitUser, GitEmail)
-	if err := execCmd("openshell", "sandbox", "exec", "-n", sandboxName, "--", "sh", "-c", gitConfig); err != nil {
+	if err := execCmd(ctx, "openshell", "sandbox", "exec", "-n", sandboxName, "--", "sh", "-c", gitConfig); err != nil {
 		return fmt.Errorf("git configuration failed: %w", err)
 	}
 
@@ -347,7 +345,7 @@ func run(ctx context.Context, cfg *Config) error {
 	}
 
 	// Step 10: mise toolchain install (egress via the temporary mise_bootstrap rule)
-	if err := runMisePhase(cfg, sandboxName, cache); err != nil {
+	if err := runMisePhase(ctx, cfg, sandboxName, cache); err != nil {
 		return err
 	}
 
@@ -357,7 +355,7 @@ func run(ctx context.Context, cfg *Config) error {
 
 	// Step 11: Narrow egress before the agent starts. Fails closed: on error
 	// the sandbox is deleted and the token revoked before returning.
-	res, err := enforceNarrowing(cfg, sandboxName, ghCred)
+	res, err := enforceNarrowing(ctx, cfg, sandboxName, ghCred)
 	if err != nil {
 		// Skip in the deferred cleanup only what enforceNarrowing really did;
 		// a failed sandbox delete is retried there.
@@ -381,10 +379,10 @@ func run(ctx context.Context, cfg *Config) error {
 	fmt.Println("[agent-run] Working directory: /sandbox/repo")
 	fmt.Println("---")
 
-	launchCmd := buildLaunchCmd(harness, cfg)
+	launchCmd := buildLaunchCmd(harness, cfg, opts)
 	// The harness's exit status is not an agent-run failure. If SIGINT/SIGTERM
 	// ended it, RunContext reports the interruption after cleanup.
-	_ = execInteractive("openshell", "sandbox", "exec", "-n", sandboxName, "--workdir", "/sandbox/repo", ttyFlag(), "--",
+	_ = execInteractive(ctx, "openshell", "sandbox", "exec", "-n", sandboxName, "--workdir", "/sandbox/repo", ttyFlag(), "--",
 		"bash", "-c", launchCmd)
 
 	fmt.Println("\n[agent-run] Harness exited. Cleaning up...")
@@ -429,8 +427,10 @@ func ttyFlag() string {
 	return "--no-tty"
 }
 
-// buildLaunchCmd builds the bash -c command that execs the harness.
-func buildLaunchCmd(h *Harness, cfg *Config) string {
+// buildLaunchCmd builds the bash -c command that execs the harness. The
+// harness's launch env (claude's OAuth rename) runs after ~/.profile, in this
+// shell only, so it applies exactly once whatever the dotfiles do.
+func buildLaunchCmd(h *Harness, cfg *Config, o HarnessOptions) string {
 	var parts []string
 	if cfg.Model != "" && h.ModelFlag != "" {
 		parts = append(parts, h.ModelFlag, shellQuote(cfg.Model))
@@ -438,37 +438,92 @@ func buildLaunchCmd(h *Harness, cfg *Config) string {
 	for _, a := range cfg.PassthroughArgs {
 		parts = append(parts, shellQuote(a))
 	}
-	return fmt.Sprintf("source ~/.profile 2>/dev/null; exec %s %s", h.Command, strings.Join(parts, " "))
+	env := ""
+	if e := h.LaunchEnv(o); e != "" {
+		env = e + "; "
+	}
+	return fmt.Sprintf("source ~/.profile 2>/dev/null; %sexec %s %s", env, h.Command, strings.Join(parts, " "))
 }
 
-// waitForSandbox waits for a sandbox to become ready.
-func waitForSandbox(ctx context.Context, name string) error {
-	timeout := time.After(SandboxReadyTimeout)
-	ticker := time.NewTicker(SandboxReadyPoll)
-	defer ticker.Stop()
+// sandboxPhase reads the phase of sandbox name from `openshell sandbox get
+// <name> -o json` (a top-level "phase", e.g. "Ready"), which describes exactly
+// that sandbox. exists is false when the gateway reports it not found; err is
+// set for any other failure.
+func sandboxPhase(ctx context.Context, name string) (phase string, exists bool, err error) {
+	out, err := execCmdOutput(ctx, "openshell", "sandbox", "get", name, "-o", "json")
+	if err != nil {
+		if strings.Contains(strings.ToLower(out), "not found") {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("openshell sandbox get %s failed: %w", name, err)
+	}
+	var doc struct {
+		Name  string `json:"name"`
+		Phase string `json:"phase"`
+	}
+	if err := json.Unmarshal([]byte(extractJSONObject(out)), &doc); err != nil {
+		return "", false, fmt.Errorf("could not parse 'openshell sandbox get %s' output: %w", name, err)
+	}
+	if doc.Name != "" && doc.Name != name {
+		return "", false, fmt.Errorf("openshell sandbox get %s returned sandbox %q", name, doc.Name)
+	}
+	return doc.Phase, true, nil
+}
 
+// sandboxReadyTimeout is how long waitForSandbox waits. The first run of a new
+// image digest pulls a multi-GB harness image (and a kubernetes sandbox may
+// wait for its PVC), so the default is generous; AGENT_RUN_READY_TIMEOUT
+// (a Go duration such as 15m) overrides it.
+func sandboxReadyTimeout() time.Duration {
+	if v := os.Getenv("AGENT_RUN_READY_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+		fmt.Printf("[agent-run] WARN: ignoring invalid AGENT_RUN_READY_TIMEOUT %q (want a duration such as 15m)\n", v)
+	}
+	return SandboxReadyTimeout
+}
+
+// sandboxReadyPoll is waitForSandbox's poll interval (a var for tests).
+var sandboxReadyPoll = SandboxReadyPoll
+
+// waitForSandbox waits until this sandbox's own phase is Ready (see
+// sandboxPhase): another sandbox being Ready, or a name that merely contains
+// this one, never counts.
+func waitForSandbox(ctx context.Context, name string) error {
+	limit := sandboxReadyTimeout()
+	deadline := time.Now().Add(limit)
 	for {
+		var last string
+		phase, exists, err := sandboxPhase(ctx, name)
+		switch {
+		case err != nil:
+			last = err.Error()
+		case !exists:
+			last = "not found"
+		case strings.EqualFold(phase, "Ready"):
+			return nil
+		default:
+			last = phase
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("sandbox %s did not become ready within %v (last status: %s; the first pull of a harness image can be slow, raise the limit with AGENT_RUN_READY_TIMEOUT=20m)", name, limit, last)
+		}
 		select {
 		case <-ctx.Done():
 			return ErrInterrupted
-		case <-timeout:
-			return fmt.Errorf("sandbox did not become ready within %v", SandboxReadyTimeout)
-		case <-ticker.C:
-			out, _ := execCmdOutput("openshell", "sandbox", "list")
-			if strings.Contains(out, name) && strings.Contains(out, "Ready") {
-				return nil
-			}
+		case <-time.After(sandboxReadyPoll):
 		}
 	}
 }
 
 // printDiagnostics prints diagnostic information.
-func printDiagnostics(cfg *Config) error {
+func printDiagnostics(ctx context.Context, cfg *Config) error {
 	fmt.Println("=== agent-run diagnostics ===")
 
 	// OpenShell version + minimum-version gate
 	fmt.Print("  OpenShell version:  ")
-	out, _ := execCmdOutput("openshell", "--version")
+	out, _ := execCmdOutput(ctx, "openshell", "--version")
 	if out != "" {
 		fmt.Println(strings.TrimSpace(out))
 		if _, err := gateOpenShellVersion(out); err != nil {
@@ -501,7 +556,7 @@ func printDiagnostics(cfg *Config) error {
 	if cfg != nil {
 		driverOverride = cfg.Driver
 	}
-	driver := detectDriver(driverOverride)
+	driver := detectDriver(ctx, driverOverride)
 	fmt.Printf("  Compute driver:     %s\n", driver)
 	fmt.Printf("  Driver config:      cache mounts need gateway setting %s\n", allowDriverConfigHint(driver))
 
@@ -510,7 +565,7 @@ func printDiagnostics(cfg *Config) error {
 		if owner, name, err := ParseRepo(cfg.Repo); err == nil {
 			vol := cacheVolumeName(owner, name)
 			state := "absent (created on first run)"
-			if execCmdSilent(driver, "volume", "inspect", vol) == nil {
+			if execCmdSilent(ctx, driver, "volume", "inspect", vol) == nil {
 				state = "present"
 			}
 			fmt.Printf("  mise cache volume:  %s (%s)\n", vol, state)
@@ -546,7 +601,7 @@ func printDiagnostics(cfg *Config) error {
 	// GitHub App keychain
 	fmt.Println("\n  GitHub App credentials:")
 	fmt.Printf("    %s: ", KeychainService)
-	if keychainExists(KeychainService) {
+	if keychainExists(ctx, KeychainService) {
 		fmt.Println("present")
 	} else {
 		fmt.Println("MISSING")
@@ -590,7 +645,7 @@ func printDiagnostics(cfg *Config) error {
 
 	// Gateway status
 	fmt.Println("\n  Gateway status:")
-	out, _ = execCmdOutput("openshell", "status")
+	out, _ = execCmdOutput(ctx, "openshell", "status")
 	for _, line := range strings.Split(out, "\n") {
 		if line != "" {
 			fmt.Printf("    %s\n", line)
@@ -599,7 +654,7 @@ func printDiagnostics(cfg *Config) error {
 
 	// Active sandboxes
 	fmt.Println("\n  Active sandboxes:")
-	out, _ = execCmdOutput("openshell", "sandbox", "list")
+	out, _ = execCmdOutput(ctx, "openshell", "sandbox", "list")
 	for _, line := range strings.Split(out, "\n") {
 		if line != "" {
 			fmt.Printf("    %s\n", line)
@@ -608,7 +663,7 @@ func printDiagnostics(cfg *Config) error {
 
 	// Providers
 	fmt.Println("\n  Providers:")
-	out, _ = execCmdOutput("openshell", "provider", "list")
+	out, _ = execCmdOutput(ctx, "openshell", "provider", "list")
 	for _, line := range strings.Split(out, "\n") {
 		if line != "" {
 			fmt.Printf("    %s\n", line)
@@ -620,8 +675,8 @@ func printDiagnostics(cfg *Config) error {
 }
 
 // keychainExists checks if a keychain entry exists (macOS only).
-func keychainExists(service string) bool {
-	return execCmdSilent("security", "find-generic-password", "-s", service, "-a", os.Getenv("USER")) == nil
+func keychainExists(ctx context.Context, service string) bool {
+	return execCmdSilent(context.Background(), "security", "find-generic-password", "-s", service, "-a", os.Getenv("USER")) == nil
 }
 
 // findRepoRoot finds the repository root directory.

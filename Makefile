@@ -40,10 +40,10 @@ $(BUILD_DIR)/$(BINARY_NAME): $(GO_SOURCES) go.mod
 	$(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME) $(SRC_DIR)
 	@echo "Binary built: $(BUILD_DIR)/$(BINARY_NAME)"
 
-## test: Run all tests
+## test: Run all tests (every package, incl. the embed/contract tests in openshell/)
 test:
 	@echo "Running tests..."
-	$(GO) test $(GOFLAGS) -cover $(PKG_DIR)
+	$(GO) test $(GOFLAGS) -cover ./...
 
 ## lint: Run linter
 lint:

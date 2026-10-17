@@ -29,12 +29,9 @@ jobs:
       - name: Vet
         run: make vet
 
+      # Covers every package, including the embed/contract tests in openshell/.
       - name: Test
         run: make test
-
-      # Covers every package, including the embed/contract tests in openshell/.
-      - name: Test (all packages, incl. contract tests)
-        run: go test ./...
 
       - name: Build
         run: make build

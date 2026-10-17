@@ -1,6 +1,7 @@
 package agentrun
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -24,7 +25,7 @@ type GitHubCredential struct {
 
 // appKeychainExists checks if the GitHub App private key is in the keychain.
 func appKeychainExists() bool {
-	return execCmdSilent("security", "find-generic-password",
+	return execCmdSilent(context.Background(), "security", "find-generic-password",
 		"-s", KeychainService, "-a", KeychainAccount) == nil
 }
 

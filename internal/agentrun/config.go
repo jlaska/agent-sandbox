@@ -34,6 +34,7 @@ type Config struct {
 	// Image/toolchain flags
 	Image          string   // --image: override the harness image ref
 	NoMise         bool     // --no-mise: skip toolchain install
+	MiseUnsafe     bool     // --mise-unsafe: install without the mise hardening
 	FreshCache     bool     // --fresh-cache: clear the mise cache before install
 	NoCache        bool     // --no-cache: don't mount a mise cache
 	MiseAllowHosts []string // --mise-allow-host (repeatable, host[:port])
@@ -117,6 +118,7 @@ func ParseArgs(args []string) (*Config, error) {
 
 	fs.StringVar(&cfg.Image, "image", "", "override the harness image ref")
 	fs.BoolVar(&cfg.NoMise, "no-mise", false, "skip mise toolchain install")
+	fs.BoolVar(&cfg.MiseUnsafe, "mise-unsafe", false, "install the mise toolchain without hardening (hooks on, paranoid mode off, no dependency cooldown)")
 	fs.BoolVar(&cfg.FreshCache, "fresh-cache", false, "clear the mise cache before install")
 	fs.BoolVar(&cfg.NoCache, "no-cache", false, "do not mount a mise cache")
 	fs.Var(&hostPortCollector{values: &cfg.MiseAllowHosts}, "mise-allow-host", "extra host[:port] allowed during mise install (repeatable)")
@@ -166,6 +168,19 @@ func ParseArgs(args []string) (*Config, error) {
 	}
 
 	if cfg.RevokeToken != "" {
+		return cfg, nil
+	}
+
+	// --diag must work when a run would be refused (no inference key, no args
+	// at all), so it skips the positional requirements and Validate. Given
+	// positionals still scope it (cache volume, image override).
+	if cfg.Diag {
+		if len(positional) > 0 {
+			cfg.Repo = positional[0]
+		}
+		if len(positional) > 1 {
+			cfg.Harness = positional[1]
+		}
 		return cfg, nil
 	}
 
@@ -227,16 +242,13 @@ func (c *Config) Validate() error {
 	if c.Inference != "" && c.Harness != HarnessOpencode {
 		return fmt.Errorf("--inference applies to the opencode harness only (harness is %q)", c.Harness)
 	}
-	if c.Harness == HarnessOpencode {
-		// Fail before any sandbox exists if no usable backend/key is available.
-		if _, err := resolveOpencodeBackend(c.Inference, c.EnvVars); err != nil {
-			return err
-		}
-	}
 	// --fresh-cache clears the persistent per-repo cache; --no-cache means there
 	// is none, so the combination is contradictory (and would silently do nothing).
 	if c.FreshCache && c.NoCache {
 		return fmt.Errorf("--fresh-cache and --no-cache are mutually exclusive: --no-cache mounts no persistent cache, so there is nothing to clear")
+	}
+	if c.MiseUnsafe && c.NoMise {
+		return fmt.Errorf("--mise-unsafe and --no-mise are mutually exclusive: --no-mise installs nothing")
 	}
 	if c.Driver != "" && !oneOf(c.Driver, computeDrivers) {
 		return fmt.Errorf("invalid --driver %q; supported: %s", c.Driver, strings.Join(computeDrivers, ", "))
@@ -268,6 +280,7 @@ func printUsage() {
 	fmt.Println("  --env KEY=VAL   Pass env var to sandbox (repeatable)")
 	fmt.Println("  --image <ref>   Override the harness image (default: pinned in images.yaml)")
 	fmt.Println("  --no-mise       Skip mise toolchain install")
+	fmt.Println("  --mise-unsafe   Install mise tools without hardening (hooks on, paranoid off,\n                  no 3-day dependency cooldown)")
 	fmt.Println("  --fresh-cache   Clear the mise cache before install")
 	fmt.Println("  --no-cache      Do not mount a mise cache")
 	fmt.Println("  --mise-allow-host host[:port]")

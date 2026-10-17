@@ -342,23 +342,71 @@ func TestShellHarnessRejected(t *testing.T) {
 	}
 }
 
-func TestParseArgsOpencodeBackendValidatedEarly(t *testing.T) {
+// The opencode backend is resolved once in Run, before anything is created;
+// a run with no usable key fails without running a single command.
+func TestRunOpencodeBackendValidatedEarly(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	t.Setenv("LITELLM_API_KEY", "")
 	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "")
-	if _, err := ParseArgs([]string{"jlaska/agent-sandbox", "opencode"}); err == nil {
-		t.Error("opencode with no credentials must fail before any sandbox exists")
+	cfg, err := ParseArgs([]string{"jlaska/agent-sandbox", "opencode"})
+	if err != nil {
+		t.Fatal(err)
 	}
-	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "oauth")
-	if _, err := ParseArgs([]string{"jlaska/agent-sandbox", "opencode"}); err == nil || !strings.Contains(err.Error(), "OAUTH") {
-		t.Errorf("oauth-only err = %v", err)
-	}
-	t.Setenv("ANTHROPIC_API_KEY", "k")
-	if _, err := ParseArgs([]string{"jlaska/agent-sandbox", "opencode"}); err != nil {
-		t.Errorf("anthropic key should suffice: %v", err)
-	}
+	withMockExec(t, func(m *mockCmd) {
+		if err := Run(cfg); err == nil {
+			t.Error("opencode with no credentials must fail before any sandbox exists")
+		}
+		t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "oauth")
+		if err := Run(cfg); err == nil || !strings.Contains(err.Error(), "OAUTH") {
+			t.Errorf("oauth-only err = %v", err)
+		}
+		if len(m.calls) != 0 {
+			t.Errorf("commands ran before the backend check: %v", callStrings(m))
+		}
+	})
 	if _, err := ParseArgs([]string{"jlaska/agent-sandbox", "claude", "--inference", "litellm"}); err == nil ||
 		!strings.Contains(err.Error(), "opencode harness only") {
 		t.Errorf("err = %v", err)
+	}
+}
+
+// --diag runs where a run would be refused: with no positionals at all, and
+// for opencode without an inference key (whose diag line explains why).
+func TestParseArgsDiag(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("LITELLM_API_KEY", "")
+	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "")
+
+	cfg, err := ParseArgs([]string{"--diag"})
+	if err != nil || !cfg.Diag || cfg.Help {
+		t.Fatalf("bare --diag: cfg=%+v err=%v", cfg, err)
+	}
+
+	cfg, err = ParseArgs([]string{"jlaska/agent-sandbox", "opencode", "--diag"})
+	if err != nil {
+		t.Fatalf("opencode --diag without a key: %v", err)
+	}
+	if cfg.Repo != "jlaska/agent-sandbox" || cfg.Harness != "opencode" || !cfg.Diag {
+		t.Errorf("cfg = %+v", cfg)
+	}
+	withMockExec(t, func(m *mockCmd) {
+		var runErr error
+		out := captureStdout(t, func() { runErr = Run(cfg) })
+		if runErr != nil {
+			t.Fatal(runErr)
+		}
+		if !strings.Contains(out, "opencode backend:   unavailable (") {
+			t.Errorf("diag lacks the opencode backend line:\n%s", out)
+		}
+	})
+}
+
+func TestParseArgsMiseUnsafe(t *testing.T) {
+	cfg, err := ParseArgs([]string{"jlaska/agent-sandbox", "claude", "--mise-unsafe"})
+	if err != nil || !cfg.MiseUnsafe {
+		t.Fatalf("cfg=%+v err=%v", cfg, err)
+	}
+	if _, err := ParseArgs([]string{"jlaska/agent-sandbox", "claude", "--mise-unsafe", "--no-mise"}); err == nil {
+		t.Error("--mise-unsafe with --no-mise must be rejected")
 	}
 }

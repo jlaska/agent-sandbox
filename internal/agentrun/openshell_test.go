@@ -1,6 +1,8 @@
 package agentrun
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -72,7 +74,7 @@ func TestCheckOpenShellVersion(t *testing.T) {
 	t.Run("runs openshell --version", func(t *testing.T) {
 		withMockExec(t, func(mock *mockCmd) {
 			mock.execOutput = func(string, ...string) (string, error) { return "openshell 0.1.4\n", nil }
-			v, err := checkOpenShellVersion()
+			v, err := checkOpenShellVersion(context.Background())
 			if err != nil || v != "0.1.4" {
 				t.Fatalf("got %q, %v", v, err)
 			}
@@ -85,7 +87,7 @@ func TestCheckOpenShellVersion(t *testing.T) {
 	t.Run("command failure", func(t *testing.T) {
 		withMockExec(t, func(mock *mockCmd) {
 			mock.execOutput = func(string, ...string) (string, error) { return "", errors.New("boom") }
-			if _, err := checkOpenShellVersion(); err == nil {
+			if _, err := checkOpenShellVersion(context.Background()); err == nil {
 				t.Error("expected error")
 			}
 		})
@@ -106,7 +108,7 @@ func TestEnsureProfile(t *testing.T) {
 	t.Run("imports when absent", func(t *testing.T) {
 		withMockExec(t, func(mock *mockCmd) {
 			mock.execOutput = func(string, ...string) (string, error) { return "[]", nil }
-			if err := ensureProfile("claude-code"); err != nil {
+			if err := ensureProfileListed("claude-code"); err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
 			if n := importCalls(mock); n != 1 {
@@ -120,7 +122,7 @@ func TestEnsureProfile(t *testing.T) {
 			mock.execOutput = func(string, ...string) (string, error) {
 				return `[{"id":"anthropic"},{"id":"claude-code"}]`, nil
 			}
-			if err := ensureProfile("claude-code"); err != nil {
+			if err := ensureProfileListed("claude-code"); err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
 			if n := importCalls(mock); n != 0 {
@@ -137,7 +139,7 @@ func TestEnsureProfile(t *testing.T) {
 				}
 				return "ID  CATEGORY\nlitellm-inference  inference\n", nil
 			}
-			if err := ensureProfile("litellm-inference"); err != nil {
+			if err := ensureProfileListed("litellm-inference"); err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
 			if n := importCalls(mock); n != 0 {
@@ -154,7 +156,7 @@ func TestEnsureProfile(t *testing.T) {
 				}
 				return "claude-code-extra  source\n", nil
 			}
-			if err := ensureProfile("claude-code"); err != nil {
+			if err := ensureProfileListed("claude-code"); err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
 			if n := importCalls(mock); n != 1 {
@@ -167,7 +169,7 @@ func TestEnsureProfile(t *testing.T) {
 		withMockExec(t, func(mock *mockCmd) {
 			mock.execOutput = func(string, ...string) (string, error) { return "[]", nil }
 			mock.err = errors.New("denied")
-			err := ensureProfile("anthropic")
+			err := ensureProfileListed("anthropic")
 			if err == nil || !strings.Contains(err.Error(), "failed to import anthropic") {
 				t.Errorf("err = %v", err)
 			}
@@ -176,7 +178,7 @@ func TestEnsureProfile(t *testing.T) {
 
 	t.Run("unknown profile", func(t *testing.T) {
 		withMockExec(t, func(mock *mockCmd) {
-			if err := ensureProfile("nope"); err == nil {
+			if err := ensureProfileListed("nope"); err == nil {
 				t.Error("expected error")
 			}
 		})
@@ -215,7 +217,7 @@ func TestEnsureProfileReconcilesBinaries(t *testing.T) {
 		withMockExec(t, func(m *mockCmd) {
 			m.execOutput = listAndExport(`{"id":"anthropic","resource_version":7,"binaries":["/usr/bin/curl","/usr/local/bin/curl"]}`, nil)
 			var staged string
-			execCmdFn = func(name string, args ...string) error {
+			execCmdFn = func(_ context.Context, name string, args ...string) error {
 				m.calls = append(m.calls, append([]string{name}, args...))
 				if len(args) >= 5 && args[2] == "update" {
 					b, err := os.ReadFile(args[len(args)-1])
@@ -227,7 +229,7 @@ func TestEnsureProfileReconcilesBinaries(t *testing.T) {
 				return nil
 			}
 			captureStdout(t, func() {
-				if err := ensureProfile("anthropic"); err != nil {
+				if err := ensureProfileListed("anthropic"); err != nil {
 					t.Fatal(err)
 				}
 			})
@@ -246,10 +248,14 @@ func TestEnsureProfileReconcilesBinaries(t *testing.T) {
 		})
 	})
 
-	t.Run("equal binaries are a no-op (order-insensitive)", func(t *testing.T) {
+	t.Run("equal document is a no-op (binaries order-insensitive, server fields ignored)", func(t *testing.T) {
 		withMockExec(t, func(m *mockCmd) {
-			m.execOutput = listAndExport(`{"id":"anthropic","resource_version":7,"binaries":["/usr/local/bin/opencode","/usr/bin/curl"]}`, nil)
-			if err := ensureProfile("anthropic"); err != nil {
+			m.execOutput = listAndExport(exportOf(t, "anthropic", func(d map[string]any) {
+				d["binaries"] = []any{"/usr/local/bin/opencode", "/usr/bin/curl"}
+				d["created_at"] = "2026-10-16 00:00:00"
+				d["credentials"].([]any)[0].(map[string]any)["query_param"] = ""
+			}), nil)
+			if err := ensureProfileListed("anthropic"); err != nil {
 				t.Fatal(err)
 			}
 			if got := updates(m); len(got) != 0 {
@@ -258,11 +264,42 @@ func TestEnsureProfileReconcilesBinaries(t *testing.T) {
 		})
 	})
 
+	// Same binaries, but an older import declared other credential env_vars:
+	// 0.1.4 would reject `provider create --credential ANTHROPIC_API_KEY`.
+	for name, mutate := range map[string]func(map[string]any){
+		"stale credential env_vars": func(d map[string]any) {
+			d["credentials"].([]any)[0].(map[string]any)["env_vars"] = []any{"api_key"}
+		},
+		"stale endpoints": func(d map[string]any) {
+			d["endpoints"].([]any)[0].(map[string]any)["host"] = "api.old.example.com"
+		},
+		"stale auth_style": func(d map[string]any) {
+			d["credentials"].([]any)[0].(map[string]any)["auth_style"] = "bearer"
+		},
+	} {
+		t.Run(name+" are updated", func(t *testing.T) {
+			withMockExec(t, func(m *mockCmd) {
+				m.execOutput = listAndExport(exportOf(t, "anthropic", mutate), nil)
+				out := captureStdout(t, func() {
+					if err := ensureProfileListed("anthropic"); err != nil {
+						t.Fatal(err)
+					}
+				})
+				if got := updates(m); len(got) != 1 {
+					t.Errorf("updates = %v", got)
+				}
+				if !strings.Contains(out, "differs in:") {
+					t.Errorf("out = %q", out)
+				}
+			})
+		})
+	}
+
 	t.Run("export failure leaves the profile alone", func(t *testing.T) {
 		withMockExec(t, func(m *mockCmd) {
 			m.execOutput = listAndExport("", errors.New("denied"))
 			out := captureStdout(t, func() {
-				if err := ensureProfile("anthropic"); err != nil {
+				if err := ensureProfileListed("anthropic"); err != nil {
 					t.Fatal(err)
 				}
 			})
@@ -277,7 +314,7 @@ func TestEnsureProfileReconcilesBinaries(t *testing.T) {
 			m.execOutput = listAndExport(`{"resource_version":2,"binaries":["/usr/bin/curl"]}`, nil)
 			m.err = errors.New("profile attached to a sandbox")
 			out := captureStdout(t, func() {
-				if err := ensureProfile("anthropic"); err != nil {
+				if err := ensureProfileListed("anthropic"); err != nil {
 					t.Fatalf("a failed update must not abort the run: %v", err)
 				}
 			})
@@ -290,7 +327,7 @@ func TestEnsureProfileReconcilesBinaries(t *testing.T) {
 	t.Run("missing resource_version is not updated blindly", func(t *testing.T) {
 		withMockExec(t, func(m *mockCmd) {
 			m.execOutput = listAndExport(`{"binaries":["/usr/bin/curl"]}`, nil)
-			captureStdout(t, func() { _ = ensureProfile("anthropic") })
+			captureStdout(t, func() { _ = ensureProfileListed("anthropic") })
 			if len(updates(m)) != 0 {
 				t.Errorf("updates = %v", updates(m))
 			}
@@ -301,8 +338,17 @@ func TestEnsureProfileReconcilesBinaries(t *testing.T) {
 func TestEnsureProfiles(t *testing.T) {
 	withMockExec(t, func(mock *mockCmd) {
 		mock.execOutput = func(string, ...string) (string, error) { return "[]", nil }
-		if err := ensureProfiles(harnesses["pi"].Providers()); err != nil {
+		if err := ensureProfiles(context.Background(), harnesses["pi"].Providers(HarnessOptions{})); err != nil {
 			t.Fatalf("unexpected error: %v", err)
+		}
+		lists := 0
+		for _, c := range callStrings(mock) {
+			if strings.Contains(c, "list-profiles") {
+				lists++
+			}
+		}
+		if lists != 1 {
+			t.Errorf("list-profiles calls = %d, want 1 per run", lists)
 		}
 		var imports int
 		for _, c := range mock.calls {
@@ -336,8 +382,8 @@ func TestDetectDriver(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			withMockExec(t, func(mock *mockCmd) {
 				mock.execOutput = func(string, ...string) (string, error) { return tt.out, tt.err }
-				if got := detectDriver(tt.override); got != tt.want {
-					t.Errorf("detectDriver() = %q, want %q", got, tt.want)
+				if got := detectDriver(context.Background(), tt.override); got != tt.want {
+					t.Errorf("detectDriver(context.Background()) = %q, want %q", got, tt.want)
 				}
 				if tt.override != "" && len(mock.calls) != 0 {
 					t.Error("override should not shell out")
@@ -437,4 +483,39 @@ func TestProfileBinariesExistInImages(t *testing.T) {
 			}
 		}
 	}
+}
+
+// ensureProfileListed is ensureProfile for one id, with the installed state
+// read from the (mocked) gateway listing as ensureProfiles does.
+func ensureProfileListed(id string) error {
+	ctx := context.Background()
+	return ensureProfile(ctx, id, installedProfiles(ctx)[id])
+}
+
+// exportOf renders what `provider profile export <id> -o json` returns for
+// agent-run's own profile (plus resource_version 7), after mutate.
+func exportOf(t *testing.T, id string, mutate func(map[string]any)) string {
+	t.Helper()
+	data, err := profileData(id, profileFiles[id])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc any
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		t.Fatal(err)
+	}
+	norm, err := normalizeJSON(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := norm.(map[string]any)
+	d["resource_version"] = 7
+	if mutate != nil {
+		mutate(d)
+	}
+	b, err := json.Marshal(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
 }

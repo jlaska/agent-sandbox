@@ -1,6 +1,7 @@
 package agentrun
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -175,13 +176,13 @@ var revokeTokenFn = RevokeToken
 // gone and the resulting revision is Loaded. It runs even when mise was skipped
 // (the rule is always present at create time) and returns an error on any
 // failure; callers must treat that as fatal (see enforceNarrowing).
-func narrowPolicy(_ *Config, sandboxName string) error {
+func narrowPolicy(ctx context.Context, _ *Config, sandboxName string) error {
 	fmt.Printf("[agent-run] Narrowing egress: removing %s rule...\n", miseBootstrapRule)
-	if err := execCmd("openshell", "policy", "update", sandboxName,
+	if err := execCmd(ctx, "openshell", "policy", "update", sandboxName,
 		"--remove-rule", miseBootstrapRule, "--wait"); err != nil {
 		return fmt.Errorf("failed to remove %s rule: %w", miseBootstrapRule, err)
 	}
-	version, err := verifyNarrowed(sandboxName)
+	version, err := verifyNarrowed(ctx, sandboxName)
 	if err != nil {
 		return err
 	}
@@ -203,17 +204,20 @@ type narrowOutcome struct {
 // egress. The sandbox's policy revisions are printed first (they die with the
 // sandbox). The error states truthfully whether the delete succeeded; when it
 // did not, the caller's deferred cleanup retries it.
-func enforceNarrowing(cfg *Config, sandboxName string, cred *GitHubCredential) (narrowOutcome, error) {
+func enforceNarrowing(ctx context.Context, cfg *Config, sandboxName string, cred *GitHubCredential) (narrowOutcome, error) {
 	var out narrowOutcome
-	err := narrowPolicy(cfg, sandboxName)
+	err := narrowPolicy(ctx, cfg, sandboxName)
 	if err == nil {
 		return out, nil
 	}
 	fmt.Printf("[agent-run] ERROR: egress narrowing failed: %v\n", err)
-	printPolicyHistory(sandboxName)
+	// A signal may be what failed narrowing: the fail-closed steps must still
+	// run, so they use a context that is not cancelled with ctx.
+	ctx = detached(ctx)
+	printPolicyHistory(ctx, sandboxName)
 	fmt.Printf("[agent-run] Failing closed: deleting sandbox %s and revoking credentials.\n", sandboxName)
 	status := "sandbox deleted"
-	if derr := execCmdSilent("openshell", "sandbox", "delete", sandboxName); derr != nil {
+	if derr := execCmdSilent(ctx, "openshell", "sandbox", "delete", sandboxName); derr != nil {
 		fmt.Printf("[agent-run] warning: sandbox delete failed: %v (will retry during cleanup)\n", derr)
 		status = fmt.Sprintf("SANDBOX DELETE FAILED (%v; cleanup will retry, otherwise run: openshell sandbox delete %s)", derr, sandboxName)
 	} else {
@@ -231,8 +235,8 @@ func enforceNarrowing(cfg *Config, sandboxName string, cred *GitHubCredential) (
 
 // printPolicyHistory prints `openshell policy list <sandbox>` (revision
 // statuses and load errors) so the evidence survives the sandbox delete.
-func printPolicyHistory(sandboxName string) {
-	out, err := execCmdOutput("openshell", "policy", "list", sandboxName)
+func printPolicyHistory(ctx context.Context, sandboxName string) {
+	out, err := execCmdOutput(ctx, "openshell", "policy", "list", sandboxName)
 	out = strings.TrimSpace(out)
 	if err != nil || out == "" {
 		return
@@ -269,8 +273,8 @@ func extractJSONObject(out string) string {
 	return out[start : end+1]
 }
 
-func getPolicyDoc(args ...string) (*policyGetDoc, error) {
-	out, err := execCmdOutput("openshell", append([]string{"policy", "get"}, args...)...)
+func getPolicyDoc(ctx context.Context, args ...string) (*policyGetDoc, error) {
+	out, err := execCmdOutput(ctx, "openshell", append([]string{"policy", "get"}, args...)...)
 	if err != nil {
 		return nil, fmt.Errorf("openshell policy get %s failed: %w", strings.Join(args, " "), err)
 	}
@@ -285,8 +289,8 @@ func getPolicyDoc(args ...string) (*policyGetDoc, error) {
 // policy no longer contains mise_bootstrap and (2) the latest revision (the
 // effective version) has status loaded. `--wait` alone is not enough: it also
 // exits 0 for "unchanged" and "superseded". Returns the verified revision.
-func verifyNarrowed(sandboxName string) (uint32, error) {
-	eff, err := getPolicyDoc(sandboxName, "--full", "-o", "json")
+func verifyNarrowed(ctx context.Context, sandboxName string) (uint32, error) {
+	eff, err := getPolicyDoc(ctx, sandboxName, "--full", "-o", "json")
 	if err != nil {
 		return 0, err
 	}
@@ -309,7 +313,7 @@ func verifyNarrowed(sandboxName string) (uint32, error) {
 	if eff.Version == 0 {
 		return 0, fmt.Errorf("verification failed: policy get returned no revision number")
 	}
-	rev, err := getPolicyDoc(sandboxName, "--rev", strconv.FormatUint(uint64(eff.Version), 10), "-o", "json")
+	rev, err := getPolicyDoc(ctx, sandboxName, "--rev", strconv.FormatUint(uint64(eff.Version), 10), "-o", "json")
 	if err != nil {
 		return 0, err
 	}

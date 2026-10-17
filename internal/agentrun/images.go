@@ -10,7 +10,9 @@ import (
 	"github.com/jlaska/agent-sandbox/openshell"
 )
 
-// zeroDigest marks an image that has not been published yet (see images.yaml).
+// zeroDigest marks an image whose digest Renovate has not pinned yet (see
+// images.yaml): CI publishes the version tag when the image change merges, and
+// the digest pin follows in a Renovate PR.
 var zeroDigest = regexp.MustCompile(`@sha256:0{64}$`)
 
 // imagesFile mirrors the structure of openshell/images.yaml.
@@ -44,7 +46,11 @@ func resolveImageFrom(data []byte, h *Harness, override string) (string, error) 
 		return "", fmt.Errorf("no image configured for %s in images.yaml", h.Name)
 	}
 	if zeroDigest.MatchString(entry.Ref) {
-		return "", fmt.Errorf("image for %s not yet published; build locally (make images) and pass --image <ref>", h.Name)
+		// Until the pin lands, use the pinned version tag rather than refusing
+		// every default run; say so, since a tag can move.
+		tagged := zeroDigest.ReplaceAllString(entry.Ref, "")
+		fmt.Printf("[agent-run] WARNING: the %s image digest is not pinned yet in images.yaml; using tag %s (it may move). Pass --image <ref>@sha256:<digest> to pin, or --image localhost/agent-%s:local for a local build.\n", h.Name, tagged, h.ImageKey)
+		return tagged, nil
 	}
 	return entry.Ref, nil
 }

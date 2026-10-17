@@ -175,8 +175,9 @@ that same name:
 
 `CLAUDE_CODE_OAUTH_TOKEN` and `ANTHROPIC_AUTH_TOKEN` are not declared by any
 profile, so they cannot be stored under their own names. When the OAuth token is
-the credential, it is stored as `ANTHROPIC_API_KEY` and the sandbox aliases the
-placeholder as `CLAUDE_CODE_OAUTH_TOKEN` (and hides `ANTHROPIC_API_KEY`). The
+the credential, it is stored as `ANTHROPIC_API_KEY`, and the shell that launches
+`claude` renames the placeholder to `CLAUDE_CODE_OAUTH_TOKEN` (and unsets
+`ANTHROPIC_API_KEY`) right before `exec`. No dotfile in the sandbox is changed. The
 `claude-code` profile injects it in the `x-api-key` header, so a Pro/Max OAuth
 token only works where that is accepted (for example a LiteLLM proxy). The
 optional `LITELLM_API_KEY_BEARER` / `LITELLM_BEARER_TOKEN` credentials of the
@@ -254,11 +255,13 @@ Every harness runs from its own OCI image, built from a shared base, with all
 versions pinned. `openshell/images.yaml` holds the digest-pinned refs and is
 embedded in the `agent-run` binary.
 
-An image that has not been published yet has an all-zero digest in
-`images.yaml`. `agent-run` then stops with:
+An image whose digest Renovate has not pinned yet has an all-zero digest in
+`images.yaml` (CI publishes the version tag when the image change merges; the
+pin follows in a Renovate PR). Until then `agent-run` uses the version tag and
+warns:
 
 ```text
-image for claude not yet published; build locally (make images) and pass --image <ref>
+[agent-run] WARNING: the claude image digest is not pinned yet in images.yaml; using tag ghcr.io/jlaska/agent-claude:2.1.301 (it may move). ...
 ```
 
 ### Local builds with `--image`
@@ -280,9 +283,33 @@ After the repo is cloned, `agent-run` looks in `/sandbox/repo` for a mise
 config. It probes, in order: `mise.toml`, `.mise.toml`, `mise/config.toml`,
 `.config/mise.toml`, `.config/mise/config.toml` and `.tool-versions`.
 
-- **Config found:** `mise trust /sandbox/repo && mise install --yes` runs inside
-  the sandbox. The log shows the duration, the cache state (`cold`, `warm` or
-  `none`) and the installed tools.
+- **Config found:** each detected file is trusted (`mise trust <file>`) and
+  `mise install --yes` runs inside the sandbox with `MISE_PARANOID=1` and
+  `MISE_NO_HOOKS=1`. The repo's config runs while the temporary bootstrap egress
+  is open, so this limits what it can do: paranoid mode trusts each file only for
+  its current content and refuses plugins from outside mise's registry, and
+  `[hooks]` (preinstall, postinstall, ...) are skipped. A tool's own build
+  scripts (cargo/npm/pip backends) still run; the egress allowlist bounds where
+  they can connect. The log shows the duration, the cache state (`cold`, `warm`
+  or `none`) and the installed tools.
+- **Dependency cooldown (3 days):** package versions published less than 3
+  days ago are not installed, so a malicious release has time to be caught and
+  yanked first. The base image sets this for everything in the sandbox, the
+  agent included: npm `min-release-age=3` in the root-owned global npmrc
+  (`/usr/local/etc/npmrc`), `UV_EXCLUDE_NEWER="3 days"` (uv, and mise's `pipx:`
+  backend), and `MISE_MINIMUM_RELEASE_AGE=3d`. The mise install sets the same
+  values explicitly, so they also apply with an `--image` that lacks them.
+  The tools treat an exact pin differently: npm refuses a version pinned
+  exactly (`pkg@1.2.3`) if it is too new (`ETARGET ... with a date before`); a
+  range resolves to an older version. mise skips the check for versions pinned
+  exactly in its config. To opt out for one command: `npm --min-release-age=0`,
+  `uv --exclude-newer false`, `mise install --minimum-release-age 0s`. Change
+  the period with `DEP_COOLDOWN_DAYS` in `openshell/images/base/Dockerfile` and
+  `dependencyCooldownEnv` in `internal/agentrun/mise.go`; a test keeps them equal.
+- **`--mise-unsafe`:** turns the hardening off (`mise trust /sandbox/repo`,
+  hooks on, paranoid off, no dependency cooldown during the install) for repos
+  that need hooks, unregistered plugins or a just-released dependency. The
+  image's cooldown still applies to the agent afterwards. agent-run logs a warning.
 - **No config:** the install is skipped and the log says what was looked for:
   `mise: no mise config found in /sandbox/repo (looked for: ...); skipping toolchain install`.
 - **`--no-mise`:** skipped, logged as `mise: skipped (--no-mise)`.

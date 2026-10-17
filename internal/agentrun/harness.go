@@ -1,6 +1,7 @@
 package agentrun
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -16,8 +17,8 @@ const (
 )
 
 // HarnessOptions carries per-run settings that some harnesses need when
-// choosing providers, init hooks and preseed config (currently only opencode,
-// whose inference backend is selectable).
+// choosing providers, preseed config and launch environment. Build it with
+// resolveHarnessOptions so the opencode backend is resolved exactly once.
 type HarnessOptions struct {
 	// Inference is the --inference value ("litellm", "anthropic" or "").
 	Inference string
@@ -25,6 +26,23 @@ type HarnessOptions struct {
 	Model string
 	// ExplicitEnv is the --env KEY=VALUE list (credential/config lookups).
 	ExplicitEnv []string
+	// Backend is the resolved opencode inference backend (inferenceLiteLLM or
+	// inferenceAnthropic); empty for other harnesses.
+	Backend string
+}
+
+// resolveHarnessOptions builds the options for a run of harness and, for
+// opencode, resolves the inference backend (failing if none is usable).
+func resolveHarnessOptions(harness string, cfg *Config) (HarnessOptions, error) {
+	o := HarnessOptions{Inference: cfg.Inference, Model: cfg.Model, ExplicitEnv: cfg.EnvVars}
+	if harness == HarnessOpencode {
+		backend, err := resolveOpencodeBackend(cfg.Inference, cfg.EnvVars)
+		if err != nil {
+			return o, err
+		}
+		o.Backend = backend
+	}
+	return o, nil
 }
 
 // Harness describes one agent CLI that agent-run can launch in a sandbox.
@@ -38,101 +56,81 @@ type Harness struct {
 	// ImageKey is the key of this harness in openshell/images.yaml.
 	ImageKey string
 
-	// profiles lists the OpenShell provider profile ids the harness needs
+	// profiles returns the OpenShell provider profile ids the harness needs
 	// imported before its inference provider can be created.
-	profiles []string
-	initHook func(sandboxName string) error
-	preseed  func(sandboxName string) error
-
-	// Optional option-aware variants; when set they take precedence over the
-	// plain forms above via ProvidersFor / InitHookFor / PreseedFor.
-	profilesFor func(HarnessOptions) ([]string, error)
-	initHookFor func(sandboxName string, o HarnessOptions) error
-	preseedFor  func(sandboxName string, o HarnessOptions) error
-}
-
-// ProvidersFor is Providers narrowed to the backend selected by o.
-func (h *Harness) ProvidersFor(o HarnessOptions) ([]string, error) {
-	if h.profilesFor != nil {
-		return h.profilesFor(o)
-	}
-	return h.profiles, nil
-}
-
-// InitHookFor is InitHook for the backend selected by o.
-func (h *Harness) InitHookFor(o HarnessOptions) func(sandboxName string) error {
-	if h.initHookFor != nil {
-		return func(sb string) error { return h.initHookFor(sb, o) }
-	}
-	return h.InitHook()
-}
-
-// PreseedFor is Preseed for the backend selected by o.
-func (h *Harness) PreseedFor(o HarnessOptions) func(sandboxName string) error {
-	if h.preseedFor != nil {
-		return func(sb string) error { return h.preseedFor(sb, o) }
-	}
-	return h.Preseed()
+	profiles func(HarnessOptions) []string
+	// preseed writes harness config so interactive first-run wizards are
+	// skipped (nil: nothing to write).
+	preseed func(ctx context.Context, sandboxName string, o HarnessOptions) error
+	// launchEnv returns shell statements run in the launch shell right before
+	// the harness is exec'd (nil: none).
+	launchEnv func(HarnessOptions) string
 }
 
 // Providers returns the provider profile ids that must exist on the gateway
 // for this harness (see ensureProfile). The github-agent profile is needed by
 // every harness and is handled separately in Run.
-func (h *Harness) Providers() []string { return h.profiles }
-
-// InitHook returns the function that maps provider-injected credentials to the
-// env vars the harness expects. It never returns nil.
-func (h *Harness) InitHook() func(sandboxName string) error {
-	if h.initHook == nil {
-		return func(string) error { return nil }
+func (h *Harness) Providers(o HarnessOptions) []string {
+	if h.profiles == nil {
+		return nil
 	}
-	return h.initHook
+	return h.profiles(o)
 }
 
-// Preseed returns the function that writes harness config so interactive
-// first-run wizards are skipped. It never returns nil.
-func (h *Harness) Preseed() func(sandboxName string) error {
+// Preseed writes the harness config in the sandbox (a no-op for harnesses
+// without one).
+func (h *Harness) Preseed(ctx context.Context, sandboxName string, o HarnessOptions) error {
 	if h.preseed == nil {
-		return func(string) error { return nil }
+		return nil
 	}
-	return h.preseed
+	return h.preseed(ctx, sandboxName, o)
 }
 
-// harnesses is the harness registry. To add a harness (WP4c: opencode), add a
-// constant above, an entry here, an image in openshell/images.yaml, and the
-// per-harness cases in provider.go (credentials/providers) and Validate.
+// LaunchEnv returns the shell statements that prepare the harness environment
+// in the launch shell ("" when there are none).
+func (h *Harness) LaunchEnv(o HarnessOptions) string {
+	if h.launchEnv == nil {
+		return ""
+	}
+	return h.launchEnv(o)
+}
+
+func fixedProfiles(ids ...string) func(HarnessOptions) []string {
+	return func(HarnessOptions) []string { return ids }
+}
+
+// harnesses is the harness registry. To add a harness, add a constant above,
+// an entry here, an image in openshell/images.yaml, and the per-harness cases
+// in provider.go (credentials/providers) and resolveHarnessOptions.
 var harnesses = map[string]*Harness{
 	HarnessClaude: {
-		Name:        HarnessClaude,
-		Command:     "claude",
-		ModelFlag:   "--model",
-		ImageKey:    "claude",
-		profiles:    []string{"claude-code"},
-		initHook:    func(sb string) error { return claudeInitHook(sb, HarnessOptions{}) },
-		initHookFor: claudeInitHook,
-		preseed:     claudePreseed,
+		Name:      HarnessClaude,
+		Command:   "claude",
+		ModelFlag: "--model",
+		ImageKey:  "claude",
+		profiles:  fixedProfiles("claude-code"),
+		preseed:   claudePreseed,
+		launchEnv: claudeLaunchEnv,
 	},
 	HarnessPi: {
 		Name:      HarnessPi,
 		Command:   "pi",
 		ModelFlag: "--model",
 		ImageKey:  "pi",
-		profiles:  []string{"litellm-inference"},
+		profiles:  fixedProfiles("litellm-inference"),
 	},
 	// opencode 1.19.3: both the default TUI command (`opencode --help`, pinned
 	// image) and `opencode run` (packages/opencode/src/cli/cmd/run.ts,
-	// alias ["m"]) accept -m/--model in provider/model form.
+	// alias ["m"]) accept -m/--model in provider/model form. The providers
+	// store their credentials under the env-var names the opencode config
+	// reads (ANTHROPIC_API_KEY, LITELLM_API_KEY), so no launch env is needed.
 	HarnessOpencode: {
-		Name:        HarnessOpencode,
-		Command:     "opencode",
-		ModelFlag:   "--model",
-		ImageKey:    "opencode",
-		profiles:    []string{"anthropic", "litellm-inference"},
-		profilesFor: opencodeProfiles,
-		initHook:    func(sb string) error { return opencodeInitHook(sb, HarnessOptions{}) },
-		initHookFor: opencodeInitHook,
-		preseed:     func(sb string) error { return opencodePreseed(sb, HarnessOptions{}) },
-		preseedFor:  opencodePreseed,
+		Name:      HarnessOpencode,
+		Command:   "opencode",
+		ModelFlag: "--model",
+		ImageKey:  "opencode",
+		profiles:  opencodeProfiles,
+		preseed:   opencodePreseed,
 	},
 }
 
@@ -182,24 +180,11 @@ func resolveOpencodeBackend(inference string, env []string) (string, error) {
 	return "", fmt.Errorf("opencode needs an inference API key: set LITELLM_API_KEY (litellm backend) or ANTHROPIC_API_KEY (anthropic backend)")
 }
 
-func opencodeProfiles(o HarnessOptions) ([]string, error) {
-	backend, err := resolveOpencodeBackend(o.Inference, o.ExplicitEnv)
-	if err != nil {
-		return nil, err
+func opencodeProfiles(o HarnessOptions) []string {
+	if o.Backend == inferenceLiteLLM {
+		return []string{"litellm-inference"}
 	}
-	if backend == inferenceLiteLLM {
-		return []string{"litellm-inference"}, nil
-	}
-	return []string{"anthropic"}, nil
-}
-
-// opencodeInitHook needs no sandbox-side work: the providers store their
-// credentials under the env-var names the opencode config reads
-// (ANTHROPIC_API_KEY, LITELLM_API_KEY), so the sandbox already carries those
-// placeholders. It still validates the backend choice.
-func opencodeInitHook(_ string, o HarnessOptions) error {
-	_, err := resolveOpencodeBackend(o.Inference, o.ExplicitEnv)
-	return err
+	return []string{"anthropic"}
 }
 
 // opencodeConfigPath is the global config the image already seeds with
@@ -253,20 +238,16 @@ func opencodeConfig(backend, liteLLMBaseURL, model string) ([]byte, error) {
 }
 
 // opencodePreseed writes the global opencode config for the selected backend.
-func opencodePreseed(sandboxName string, o HarnessOptions) error {
-	backend, err := resolveOpencodeBackend(o.Inference, o.ExplicitEnv)
-	if err != nil {
-		return err
-	}
+func opencodePreseed(ctx context.Context, sandboxName string, o HarnessOptions) error {
 	baseURL := resolveCredential("LITELLM_BASE_URL", o.ExplicitEnv)
-	if backend == inferenceLiteLLM && baseURL == "" {
+	if o.Backend == inferenceLiteLLM && baseURL == "" {
 		return fmt.Errorf("LITELLM_BASE_URL is required for the opencode litellm backend, set it in your environment or pass --env LITELLM_BASE_URL=<url>")
 	}
-	cfg, err := opencodeConfig(backend, baseURL, o.Model)
+	cfg, err := opencodeConfig(o.Backend, baseURL, o.Model)
 	if err != nil {
 		return err
 	}
-	return execCmd("openshell", "sandbox", "exec", "-n", sandboxName, "--", "sh", "-c",
+	return execCmd(ctx, "openshell", "sandbox", "exec", "-n", sandboxName, "--", "sh", "-c",
 		"mkdir -p ~/.config/opencode && cat > "+opencodeConfigPath+" << 'PRESEED'\n"+string(cfg)+"PRESEED")
 }
 
@@ -291,24 +272,25 @@ func HarnessNames() []string {
 	return names
 }
 
-// claudeInitHook aliases the sandbox's ANTHROPIC_API_KEY placeholder (the only
-// key the claude-code profile accepts) as CLAUDE_CODE_OAUTH_TOKEN when that was
-// the host credential, and hides the API-key name so Claude Code does not
-// prefer it. The alias copies the placeholder; it never overwrites one. With a
-// real API key (or ANTHROPIC_AUTH_TOKEN) no sandbox-side work is needed.
-func claudeInitHook(sandboxName string, o HarnessOptions) error {
+// claudeLaunchEnv exposes the provider's ANTHROPIC_API_KEY placeholder as
+// CLAUDE_CODE_OAUTH_TOKEN when the host credential was an OAuth token, and
+// drops the API-key name so Claude Code does not prefer it. The claude-code
+// profile only accepts ANTHROPIC_API_KEY as a stored key, so the token travels
+// under that name and is renamed here, in the launch shell only: no dotfile is
+// edited, so whatever ~/.profile and ~/.bashrc do cannot run it twice. With a
+// real API key (or ANTHROPIC_AUTH_TOKEN) nothing needs renaming.
+func claudeLaunchEnv(o HarnessOptions) string {
 	if _, source := claudeCredential(o.ExplicitEnv); source != "CLAUDE_CODE_OAUTH_TOKEN" {
-		return nil
+		return ""
 	}
-	return execCmd("openshell", "sandbox", "exec", "-n", sandboxName, "--", "sh", "-c",
-		`echo 'export CLAUDE_CODE_OAUTH_TOKEN="$ANTHROPIC_API_KEY"; unset ANTHROPIC_API_KEY' | tee -a ~/.bashrc >> ~/.profile`)
+	return `export CLAUDE_CODE_OAUTH_TOKEN="$ANTHROPIC_API_KEY"; unset ANTHROPIC_API_KEY`
 }
 
 // claudePreseed writes ~/.claude.json. Claude Code checks it for
 // hasCompletedOnboarding and per-project hasTrustDialogAccepted; without
 // these, every sandbox launch triggers interactive onboarding/trust prompts.
-func claudePreseed(sandboxName string) error {
-	return execCmd("openshell", "sandbox", "exec", "-n", sandboxName, "--", "sh", "-c",
+func claudePreseed(ctx context.Context, sandboxName string, _ HarnessOptions) error {
+	return execCmd(ctx, "openshell", "sandbox", "exec", "-n", sandboxName, "--", "sh", "-c",
 		`mkdir -p ~/.claude && cat > ~/.claude.json << 'PRESEED'
 {
   "hasCompletedOnboarding": true,

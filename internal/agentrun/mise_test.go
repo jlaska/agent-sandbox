@@ -1,11 +1,15 @@
 package agentrun
 
 import (
+	"context"
 	"errors"
+	"os"
+	"os/exec"
 	"regexp"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 var regexpHashSuffix = regexp.MustCompile(`-[0-9a-f]{8}$`)
@@ -83,7 +87,7 @@ func TestPrepareCache(t *testing.T) {
 		withMockExec(t, func(m *mockCmd) {
 			m.execOutput = func(string, ...string) (string, error) { return "", errors.New("no such volume") }
 			var plan *cachePlan
-			captureStdout(t, func() { plan, _ = prepareCache(cfg, "docker") })
+			captureStdout(t, func() { plan, _ = prepareCache(context.Background(), cfg, "docker") })
 			if plan.Mode != cacheModeVolume || plan.DriverConfigJSON == "" {
 				t.Fatalf("plan = %+v", plan)
 			}
@@ -101,7 +105,7 @@ func TestPrepareCache(t *testing.T) {
 				return `{"openshell.ai/sandbox-attachable":"true","openshell.ai/sandbox-attachable-workspace":"team-a"}`, nil
 			}
 			var plan *cachePlan
-			captureStdout(t, func() { plan, _ = prepareCache(cfg, "podman") })
+			captureStdout(t, func() { plan, _ = prepareCache(context.Background(), cfg, "podman") })
 			if plan.Mode != cacheModeVolume || !strings.HasPrefix(plan.DriverConfigJSON, `{"podman"`) {
 				t.Fatalf("plan = %+v", plan)
 			}
@@ -117,7 +121,7 @@ func TestPrepareCache(t *testing.T) {
 		withMockExec(t, func(m *mockCmd) {
 			m.execOutput = func(string, ...string) (string, error) { return "null\n", nil }
 			var plan *cachePlan
-			out := captureStdout(t, func() { plan, _ = prepareCache(cfg, "docker") })
+			out := captureStdout(t, func() { plan, _ = prepareCache(context.Background(), cfg, "docker") })
 			if plan.Mode != cacheModeNone || !strings.Contains(out, "WARN") || !strings.Contains(out, "volume rm") {
 				t.Errorf("plan=%+v out=%q", plan, out)
 			}
@@ -129,7 +133,7 @@ func TestPrepareCache(t *testing.T) {
 			m.err = errors.New("boom")
 			m.execOutput = func(string, ...string) (string, error) { return "", errors.New("missing") }
 			var plan *cachePlan
-			out := captureStdout(t, func() { plan, _ = prepareCache(cfg, "docker") })
+			out := captureStdout(t, func() { plan, _ = prepareCache(context.Background(), cfg, "docker") })
 			if plan.Mode != cacheModeNone || !strings.Contains(out, "WARN") {
 				t.Errorf("plan=%+v out=%q", plan, out)
 			}
@@ -139,7 +143,7 @@ func TestPrepareCache(t *testing.T) {
 	t.Run("kubernetes mounts PVC and prints kubectl hint", func(t *testing.T) {
 		withMockExec(t, func(m *mockCmd) {
 			var plan *cachePlan
-			out := captureStdout(t, func() { plan, _ = prepareCache(cfg, "kubernetes") })
+			out := captureStdout(t, func() { plan, _ = prepareCache(context.Background(), cfg, "kubernetes") })
 			if plan.Mode != cacheModePVC || plan.Volume != "mise-cache-jlaska-agent-sandbox" {
 				t.Errorf("plan = %+v", plan)
 			}
@@ -165,7 +169,7 @@ func TestPrepareCache(t *testing.T) {
 				c := *cfg
 				c.NoCache = tt.noCache
 				var plan *cachePlan
-				out := captureStdout(t, func() { plan, _ = prepareCache(&c, tt.driver) })
+				out := captureStdout(t, func() { plan, _ = prepareCache(context.Background(), &c, tt.driver) })
 				if plan.Mode != cacheModeNone || plan.DriverConfigJSON != "" || !strings.Contains(out, tt.want) {
 					t.Errorf("plan=%+v out=%q", plan, out)
 				}
@@ -185,14 +189,33 @@ func TestCreateSandboxRetriesWithoutCache(t *testing.T) {
 		}
 		return a
 	}
-	t.Run("rejection -> WARN with hint, delete, retry", func(t *testing.T) {
-		withMockExec(t, func(m *mockCmd) {
-			m.execOutput = func(string, ...string) (string, error) {
-				return "Error: caller driver config is disabled; a gateway administrator must enable allow_driver_config", errors.New("exit 1")
+	// rejecting answers the cached create with a refusal and `sandbox get`
+	// with gone (not found) after `gone` polls.
+	rejecting := func(m *mockCmd, gone int) {
+		polls := 0
+		m.execOutput = func(_ string, args ...string) (string, error) {
+			if len(args) > 1 && args[0] == "sandbox" && args[1] == "get" {
+				polls++
+				if polls > gone {
+					return "Error: × sandbox not found", errors.New("exit 1")
+				}
+				return `{"name":"sb","phase":"Deleting"}`, nil
 			}
+			return "Error: caller driver config is disabled; a gateway administrator must enable allow_driver_config", errors.New("exit 1")
+		}
+	}
+	fastPoll := func(t *testing.T, timeout time.Duration) {
+		origT, origP := sandboxGoneTimeout, sandboxGonePoll
+		sandboxGoneTimeout, sandboxGonePoll = timeout, time.Millisecond
+		t.Cleanup(func() { sandboxGoneTimeout, sandboxGonePoll = origT, origP })
+	}
+	t.Run("rejection -> WARN with hint, delete, wait, retry", func(t *testing.T) {
+		fastPoll(t, time.Minute)
+		withMockExec(t, func(m *mockCmd) {
+			rejecting(m, 2) // deletion is asynchronous: still listed twice
 			plan := &cachePlan{Mode: cacheModeVolume, Volume: "v", DriverConfigJSON: `{"docker":{}}`, Driver: "docker"}
 			var err error
-			out := captureStdout(t, func() { err = createSandbox("sb", args, plan) })
+			out := captureStdout(t, func() { err = createSandbox(context.Background(), "sb", args, plan) })
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -203,17 +226,50 @@ func TestCreateSandboxRetriesWithoutCache(t *testing.T) {
 				t.Errorf("plan not downgraded: %+v", plan)
 			}
 			calls := callStrings(m)
-			if !slices.Contains(calls, "openshell sandbox delete sb") || calls[len(calls)-1] != "openshell sandbox create --name sb" {
-				t.Errorf("calls = %v", calls)
+			del := slices.Index(calls, "openshell sandbox delete sb")
+			polls := countMatching(calls, "openshell sandbox get sb -o json")
+			if del < 0 || polls != 3 || calls[len(calls)-1] != "openshell sandbox create --name sb" {
+				t.Errorf("want delete, 3 polls, then plain create; calls = %v", calls)
+			}
+		})
+	})
+	t.Run("name still taken -> error, no blind recreate", func(t *testing.T) {
+		fastPoll(t, 20*time.Millisecond)
+		withMockExec(t, func(m *mockCmd) {
+			rejecting(m, 1<<30)
+			plan := &cachePlan{Mode: cacheModeVolume, DriverConfigJSON: `{}`, Driver: "docker"}
+			var err error
+			captureStdout(t, func() { err = createSandbox(context.Background(), "sb", args, plan) })
+			if err == nil || !strings.Contains(err.Error(), "still exists") {
+				t.Errorf("err = %v", err)
+			}
+			if calls := callStrings(m); calls[len(calls)-1] == "openshell sandbox create --name sb" {
+				t.Errorf("recreated while the name was taken: %v", calls)
+			}
+		})
+	})
+	t.Run("create output streams through the tee seam", func(t *testing.T) {
+		withMockExec(t, func(m *mockCmd) {
+			var teed bool
+			execCmdTeeFn = func(_ context.Context, name string, a ...string) (string, error) {
+				teed = true
+				return "", nil
+			}
+			plan := &cachePlan{Mode: cacheModeVolume, DriverConfigJSON: `{}`, Driver: "docker"}
+			if err := createSandbox(context.Background(), "sb", args, plan); err != nil || !teed {
+				t.Errorf("err=%v teed=%v", err, teed)
 			}
 		})
 	})
 	t.Run("unrelated failure is returned, no retry", func(t *testing.T) {
 		withMockExec(t, func(m *mockCmd) {
-			m.execOutput = func(string, ...string) (string, error) { return "image pull failed", errors.New("exit 1") }
+			// Mentions driver config, but is not a refusal of the mount.
+			m.execOutput = func(string, ...string) (string, error) {
+				return "Error: invalid image ghcr.io/x (driver config: pull failed)", errors.New("exit 1")
+			}
 			plan := &cachePlan{Mode: cacheModeVolume, DriverConfigJSON: `{}`, Driver: "docker"}
 			var err error
-			captureStdout(t, func() { err = createSandbox("sb", args, plan) })
+			captureStdout(t, func() { err = createSandbox(context.Background(), "sb", args, plan) })
 			if err == nil || plan.DriverConfigJSON == "" || len(m.calls) != 1 {
 				t.Errorf("err=%v plan=%+v calls=%v", err, plan, m.calls)
 			}
@@ -221,7 +277,7 @@ func TestCreateSandboxRetriesWithoutCache(t *testing.T) {
 	})
 	t.Run("no cache -> single plain create", func(t *testing.T) {
 		withMockExec(t, func(m *mockCmd) {
-			if err := createSandbox("sb", args, noCache("docker")); err != nil {
+			if err := createSandbox(context.Background(), "sb", args, noCache("docker")); err != nil {
 				t.Fatal(err)
 			}
 			if len(m.calls) != 1 || strings.Contains(callStrings(m)[0], "driver-config") {
@@ -229,6 +285,22 @@ func TestCreateSandboxRetriesWithoutCache(t *testing.T) {
 			}
 		})
 	})
+}
+
+func TestIsDriverConfigRejection(t *testing.T) {
+	for out, want := range map[string]bool{
+		"Error: caller driver config is disabled; a gateway administrator must enable allow_driver_config": true,
+		"Error: external resource not admitted by required labels":                                         true,
+		"Error: invalid driver_config: unknown field mounts":                                               true,
+		"Error: unsupported driver config for driver vm":                                                   true,
+		"Error: invalid image ghcr.io/x (driver config: pull failed)":                                      false,
+		"Error: driver_config rejected because image pull failed":                                          false,
+		"Error: sandbox already exists":                                                                    false,
+	} {
+		if got := isDriverConfigRejection(out); got != want {
+			t.Errorf("isDriverConfigRejection(%q) = %v, want %v", out, got, want)
+		}
+	}
 }
 
 func TestParseMiseConfigProbe(t *testing.T) {
@@ -269,7 +341,7 @@ func TestRunMisePhaseLogPaths(t *testing.T) {
 	t.Run("--no-mise", func(t *testing.T) {
 		withMockExec(t, func(m *mockCmd) {
 			out := captureStdout(t, func() {
-				if err := runMisePhase(&Config{NoMise: true}, "sb", plan); err != nil {
+				if err := runMisePhase(context.Background(), &Config{NoMise: true}, "sb", plan); err != nil {
 					t.Fatal(err)
 				}
 			})
@@ -283,7 +355,7 @@ func TestRunMisePhaseLogPaths(t *testing.T) {
 		withMockExec(t, func(m *mockCmd) {
 			probeMock("", "", "")(m)
 			out := captureStdout(t, func() {
-				if err := runMisePhase(&Config{}, "sb", plan); err != nil {
+				if err := runMisePhase(context.Background(), &Config{}, "sb", plan); err != nil {
 					t.Fatal(err)
 				}
 			})
@@ -303,7 +375,7 @@ func TestRunMisePhaseLogPaths(t *testing.T) {
 		withMockExec(t, func(m *mockCmd) {
 			probeMock("mise.toml\n", "3\n", "./mise.lock\n")(m)
 			out := captureStdout(t, func() {
-				if err := runMisePhase(&Config{}, "sb", plan); err != nil {
+				if err := runMisePhase(context.Background(), &Config{}, "sb", plan); err != nil {
 					t.Fatal(err)
 				}
 			})
@@ -315,7 +387,7 @@ func TestRunMisePhaseLogPaths(t *testing.T) {
 			}
 			var installed bool
 			for _, c := range callStrings(m) {
-				if strings.Contains(c, "mise trust /sandbox/repo && mise install --yes") {
+				if strings.Contains(c, "mise trust 'mise.toml' && mise install --yes") {
 					installed = true
 				}
 			}
@@ -329,7 +401,7 @@ func TestRunMisePhaseLogPaths(t *testing.T) {
 		withMockExec(t, func(m *mockCmd) {
 			probeMock(".tool-versions\n", "0", "")(m)
 			out := captureStdout(t, func() {
-				if err := runMisePhase(&Config{FreshCache: true}, "sb", plan); err != nil {
+				if err := runMisePhase(context.Background(), &Config{FreshCache: true}, "sb", plan); err != nil {
 					t.Fatal(err)
 				}
 			})
@@ -351,12 +423,12 @@ func TestRunMisePhaseLogPaths(t *testing.T) {
 	t.Run("install failure hints at --mise-allow-host", func(t *testing.T) {
 		withMockExec(t, func(m *mockCmd) {
 			probeMock("mise.toml\n", "0", "")(m)
-			execCmdFn = func(name string, args ...string) error {
+			execCmdFn = func(_ context.Context, name string, args ...string) error {
 				m.calls = append(m.calls, append([]string{name}, args...))
 				return errors.New("exit 1")
 			}
 			var err error
-			captureStdout(t, func() { err = runMisePhase(&Config{}, "sb", noCache("docker")) })
+			captureStdout(t, func() { err = runMisePhase(context.Background(), &Config{}, "sb", noCache("docker")) })
 			if err == nil || !strings.Contains(err.Error(), "--mise-allow-host") {
 				t.Errorf("err = %v", err)
 			}
@@ -365,18 +437,18 @@ func TestRunMisePhaseLogPaths(t *testing.T) {
 }
 
 func TestCacheStateAndDetectionError(t *testing.T) {
-	if got := cacheState("sb", noCache("vm"), false); !strings.Contains(got, "ephemeral") {
+	if got := cacheState(context.Background(), "sb", noCache("vm"), false); !strings.Contains(got, "ephemeral") {
 		t.Error(got)
 	}
-	if got := cacheState("sb", &cachePlan{Mode: cacheModeVolume}, true); !strings.HasPrefix(got, "cold") {
+	if got := cacheState(context.Background(), "sb", &cachePlan{Mode: cacheModeVolume}, true); !strings.HasPrefix(got, "cold") {
 		t.Error(got)
 	}
 	withMockExec(t, func(m *mockCmd) {
 		m.err = errors.New("x")
-		if got := cacheState("sb", &cachePlan{Mode: cacheModeVolume}, false); got != "unknown" {
+		if got := cacheState(context.Background(), "sb", &cachePlan{Mode: cacheModeVolume}, false); got != "unknown" {
 			t.Error(got)
 		}
-		if _, err := detectMiseConfig("sb"); err == nil {
+		if _, err := detectMiseConfig(context.Background(), "sb"); err == nil {
 			t.Error("detection error must propagate")
 		}
 	})
@@ -389,10 +461,10 @@ func TestNarrowingIndependentOfMise(t *testing.T) {
 	withMockExec(t, func(m *mockCmd) {
 		narrowMock(t, "policy-get-effective-clean.json", "policy-rev-loaded.json", nil)(m)
 		captureStdout(t, func() {
-			if err := runMisePhase(&Config{NoMise: true}, "sb1", noCache("docker")); err != nil {
+			if err := runMisePhase(context.Background(), &Config{NoMise: true}, "sb1", noCache("docker")); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := enforceNarrowing(&Config{NoMise: true}, "sb1", nil); err != nil {
+			if _, err := enforceNarrowing(context.Background(), &Config{NoMise: true}, "sb1", nil); err != nil {
 				t.Fatal(err)
 			}
 		})
@@ -414,12 +486,12 @@ func TestMiseInstallFailurePrintsDeniedEgress(t *testing.T) {
 			}
 			return orig(n, a...)
 		}
-		execCmdFn = func(name string, args ...string) error {
+		execCmdFn = func(_ context.Context, name string, args ...string) error {
 			m.calls = append(m.calls, append([]string{name}, args...))
 			return errors.New("exit 1")
 		}
 		var err error
-		out := captureStdout(t, func() { err = runMisePhase(&Config{}, "sb", noCache("docker")) })
+		out := captureStdout(t, func() { err = runMisePhase(context.Background(), &Config{}, "sb", noCache("docker")) })
 		if err == nil || !strings.Contains(out, "evil.example.com:443") {
 			t.Errorf("err=%v out=%s", err, out)
 		}
@@ -427,4 +499,82 @@ func TestMiseInstallFailurePrintsDeniedEgress(t *testing.T) {
 			t.Errorf("error still points at logs of a deleted sandbox: %v", err)
 		}
 	})
+}
+
+// The default install trusts only the detected files, under paranoid mode and
+// with hooks off; --mise-unsafe restores the plain repo-wide trust.
+func TestMiseInstallScript(t *testing.T) {
+	got := miseInstallScript([]string{"mise.toml", ".tool-versions"}, false)
+	want := "source ~/.profile 2>/dev/null; cd /sandbox/repo && export MISE_PARANOID=1 MISE_NO_HOOKS=1 " +
+		"MISE_MINIMUM_RELEASE_AGE=3d UV_EXCLUDE_NEWER='3 days' npm_config_min_release_age=3 && " +
+		"mise trust 'mise.toml' && mise trust '.tool-versions' && mise install --yes"
+	if got != want {
+		t.Errorf("hardened:\n got %s\nwant %s", got, want)
+	}
+	got = miseInstallScript([]string{"mise.toml"}, true)
+	if strings.Contains(got, "MISE_PARANOID") || strings.Contains(got, "MISE_NO_HOOKS") ||
+		!strings.Contains(got, "export "+dependencyCooldownOffEnv+" && mise trust /sandbox/repo && mise install --yes") {
+		t.Errorf("unsafe: %s", got)
+	}
+}
+
+// The cooldown exports must survive a real shell intact (UV_EXCLUDE_NEWER
+// holds a space).
+func TestDependencyCooldownEnvShell(t *testing.T) {
+	for env, want := range map[string]string{
+		dependencyCooldownEnv:    "3d|3 days|3",
+		dependencyCooldownOffEnv: "0s|false|0",
+	} {
+		out, err := exec.Command("bash", "-c", "export "+env+
+			` && printf '%s|%s|%s' "$MISE_MINIMUM_RELEASE_AGE" "$UV_EXCLUDE_NEWER" "$npm_config_min_release_age"`).Output()
+		if err != nil || string(out) != want {
+			t.Errorf("export %s: got %q (%v), want %q", env, out, err, want)
+		}
+	}
+}
+
+// agent-run's cooldown must match the one baked into the base image.
+func TestDependencyCooldownMatchesBaseImage(t *testing.T) {
+	data, err := os.ReadFile("../../openshell/images/base/Dockerfile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`(?m)^ARG DEP_COOLDOWN_DAYS=(\d+)$`).FindSubmatch(data)
+	if m == nil {
+		t.Fatal("ARG DEP_COOLDOWN_DAYS not found in the base Dockerfile")
+	}
+	days := string(m[1])
+	want := "MISE_MINIMUM_RELEASE_AGE=" + days + "d UV_EXCLUDE_NEWER='" + days + " days' npm_config_min_release_age=" + days
+	if dependencyCooldownEnv != want {
+		t.Errorf("dependencyCooldownEnv = %q, want %q (base image DEP_COOLDOWN_DAYS=%s)", dependencyCooldownEnv, want, days)
+	}
+}
+
+func TestRunMisePhaseHardening(t *testing.T) {
+	for _, unsafe := range []bool{false, true} {
+		withMockExec(t, func(m *mockCmd) {
+			probeMock("mise.toml\n", "0", "")(m)
+			out := captureStdout(t, func() {
+				if err := runMisePhase(context.Background(), &Config{MiseUnsafe: unsafe}, "sb", noCache("docker")); err != nil {
+					t.Fatal(err)
+				}
+			})
+			install := ""
+			for _, c := range callStrings(m) {
+				if strings.Contains(c, "mise install") {
+					install = c
+				}
+			}
+			if hardened := strings.Contains(install, "MISE_PARANOID=1 MISE_NO_HOOKS=1") &&
+				strings.Contains(install, dependencyCooldownEnv); hardened == unsafe {
+				t.Errorf("unsafe=%v: install = %q", unsafe, install)
+			}
+			if unsafe && !strings.Contains(out, "WARN: mise: --mise-unsafe") {
+				t.Errorf("no unsafe warning: %s", out)
+			}
+			if !unsafe && !strings.Contains(out, "hardened install") {
+				t.Errorf("no hardened log: %s", out)
+			}
+		})
+	}
 }

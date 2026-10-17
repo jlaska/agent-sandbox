@@ -62,6 +62,11 @@ check "mise env vars set" \
   sh_in '[ "$MISE_DATA_DIR" = /sandbox/.mise-cache/data ] && [ "$MISE_CACHE_DIR" = /sandbox/.mise-cache/cache ] && [ "$MISE_CONFIG_DIR" = /sandbox/.config/mise ]'
 check "mise shims on PATH in login shell" sh_in 'case ":$PATH:" in *:/sandbox/.mise-cache/data/shims:*) ;; *) exit 1 ;; esac'
 check "MISE_YES not set in image" sh_in '[ -z "${MISE_YES:-}" ]'
+cooldown="$(sed -n 's/^ARG DEP_COOLDOWN_DAYS=//p' "$img_dir/base/Dockerfile")"
+check "dependency cooldown: npm min-release-age=$cooldown (global npmrc)" \
+  sh_in "[ \"\$(npm config get min-release-age)\" = $cooldown ] && [ \"\$(stat -c %U /usr/local/etc/npmrc)\" = root ]"
+check "dependency cooldown: MISE_MINIMUM_RELEASE_AGE=${cooldown}d, UV_EXCLUDE_NEWER='$cooldown days'" \
+  sh_in "[ \"\$MISE_MINIMUM_RELEASE_AGE\" = ${cooldown}d ] && [ \"\$UV_EXCLUDE_NEWER\" = '$cooldown days' ]"
 check "iproute2 present (required by OpenShell)" sh_in 'command -v ip'
 
 # --- harness version and labels --------------------------------------------------
