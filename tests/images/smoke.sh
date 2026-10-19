@@ -80,10 +80,10 @@ for l in source revision created title; do
   [ -n "$(label "org.opencontainers.image.$l")" ] && pass "label image.$l set" || fail "label image.$l set"
 done
 tools_ok=1
-for t in node npm mise uv gh git jq python3 curl; do
+for t in node npm mise uv gh git jq make python3 curl; do
   sh_in "command -v $t" >/dev/null 2>&1 || { fail "tool on PATH: $t"; tools_ok=0; }
 done
-[ "$tools_ok" -eq 1 ] && pass "base tools on PATH (node npm mise uv gh git jq python3 curl)"
+[ "$tools_ok" -eq 1 ] && pass "base tools on PATH (node npm mise uv gh git jq make python3 curl)"
 
 # --- binaries.txt: exist, executable, real files ---------------------------------
 bin_list="$img_dir/$harness/binaries.txt"

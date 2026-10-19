@@ -26,6 +26,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         git \
         iproute2 \
         jq \
+        make \
         nftables \
         openssh-sftp-server \
         procps \
