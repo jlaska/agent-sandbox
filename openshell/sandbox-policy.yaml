@@ -142,6 +142,25 @@ network_policies:
     binaries:
       - { path: /usr/local/bin/node }
 
+  # Runtime PyPI access for uv/uvx (uv run, uv sync, uvx <tool>), the Python
+  # counterpart of npm_registry. Read-only; UV_EXCLUDE_NEWER applies the cooldown.
+  pypi_registry:
+    name: pypi-registry
+    endpoints:
+      - host: pypi.org
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-only
+      - host: files.pythonhosted.org
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-only
+    binaries:
+      - { path: /usr/local/bin/uv }
+      - { path: /usr/local/bin/uvx }
+
   vertex_ai:
     name: vertex-ai
     endpoints:

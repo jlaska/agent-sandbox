@@ -339,6 +339,24 @@ func TestRealPolicyParsesAndMiseBootstrapBoundToMiseOnly(t *testing.T) {
 			}
 		}
 	}
+	// pypi_registry gives uv/uvx (and only them) runtime PyPI access.
+	pr, ok := p.NetworkPolicies["pypi_registry"]
+	if !ok {
+		t.Fatal("pypi_registry rule missing")
+	}
+	var prBins, prHosts []string
+	for _, b := range pr.Binaries {
+		prBins = append(prBins, b.Path)
+	}
+	for _, e := range pr.Endpoints {
+		prHosts = append(prHosts, e.Host)
+	}
+	if strings.Join(prBins, ",") != "/usr/local/bin/uv,/usr/local/bin/uvx" {
+		t.Errorf("pypi_registry binaries = %v, want uv and uvx", prBins)
+	}
+	if strings.Join(prHosts, ",") != "pypi.org,files.pythonhosted.org" {
+		t.Errorf("pypi_registry hosts = %v, want pypi.org and files.pythonhosted.org", prHosts)
+	}
 	// opencode inference rules exist and bind only opencode.
 	for _, key := range []string{"opencode_litellm", "opencode_anthropic"} {
 		r, ok := p.NetworkPolicies[key]

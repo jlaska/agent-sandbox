@@ -256,6 +256,16 @@ needs another host (for example `nodejs.org` for node), allow it:
 agent-run jlaska/agent-sandbox claude --mise-allow-host nodejs.org
 ```
 
+### Runtime package registries
+
+Two registries stay reachable while the agent runs, read-only and bound to one
+package manager each: `registry.npmjs.org` for `node` (npm), and `pypi.org` and
+`files.pythonhosted.org` for `uv`/`uvx`. So the agent can run `uv run pytest`,
+`uv sync` or `uvx <tool>` against a repo's `pyproject.toml`. The dependency
+cooldown applies. Python interpreters are not downloadable at runtime (uv
+fetches them from GitHub): use the image's Python 3.12, or pin `python` in the
+repo's `mise.toml` so mise installs it during the bootstrap.
+
 ### Dependency cooldown
 
 Package versions published less than 3 days ago are not installed, so a

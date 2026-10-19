@@ -583,11 +583,24 @@ probe_narrowing() { # target
     else
         pass "[$target] narrow-no-bootstrap-rule"
     fi
-    # pypi.org is reachable only through mise_bootstrap (uv under mise).
-    probe_mise_denied "$target" narrow-pypi-denied "pipx:cowsay@6.1" "pypi.org/files.pythonhosted.org"
-    # registry.npmjs.org is NOT probed: npm_registry deliberately allows node
-    # there permanently, so a denial would be wrong. dl.k8s.io is a bootstrap-only host.
+    # registry.npmjs.org and pypi.org are NOT probed for denial: npm_registry and
+    # pypi_registry deliberately allow node and uv there permanently (mise's pipx:
+    # backend runs uv, so it can reach PyPI too). dl.k8s.io is a bootstrap-only host.
     probe_mise_denied "$target" narrow-mise-download-denied "kubectl@1.30.0" "dl.k8s.io/github releases"
+    probe_uvx_pypi "$target"
+}
+
+# After narrowing, uvx must still reach PyPI through pypi_registry. A scratch
+# UV_CACHE_DIR keeps any cache from satisfying the download.
+probe_uvx_pypi() { # target
+    local target="$1" out
+    # shellcheck disable=SC2016  # expanded inside the sandbox
+    out="$(sbx bash -c 'source ~/.profile 2>/dev/null; d=$(mktemp -d) && UV_CACHE_DIR="$d" UV_TOOL_DIR="$d/tools" timeout 120 uvx cowsay==6.1 --version 2>&1; echo "rc=$?"' 2>&1)"
+    if [[ "$out" == *"rc=0"* ]]; then
+        pass "[$target] runtime-uvx-pypi (uvx downloaded cowsay from PyPI after narrowing)"
+    else
+        fail "[$target] runtime-uvx-pypi: uvx could not reach PyPI after narrowing: $(printf '%s' "$out" | tail -n3 | tr '\n' ' ')"
+    fi
 }
 
 # Wave-3 runtime risk: do inference credentials work through the proxy placeholder swap?
