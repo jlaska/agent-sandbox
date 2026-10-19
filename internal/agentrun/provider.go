@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 )
 
 // Known inference env vars to auto-forward from the host environment.
@@ -220,4 +221,29 @@ func claudeCredential(explicitEnv []string) (value, source string) {
 		}
 	}
 	return "none", ""
+}
+
+// deleteProvider deletes provider name. `sandbox delete` is asynchronous and
+// the gateway refuses to delete a provider while a sandbox is still attached
+// ("is attached to sandbox(es)"), so that refusal is retried until
+// sandboxGoneTimeout; any other failure is returned at once.
+func deleteProvider(ctx context.Context, name string) error {
+	deadline := time.Now().Add(sandboxGoneTimeout)
+	for {
+		out, err := execCmdOutput(ctx, "openshell", "provider", "delete", name)
+		if err == nil {
+			return nil
+		}
+		if !strings.Contains(out, "is attached to sandbox") || time.Now().After(deadline) {
+			if msg := strings.Join(strings.Fields(out), " "); msg != "" {
+				return fmt.Errorf("%w: %s", err, msg)
+			}
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ErrInterrupted
+		case <-time.After(sandboxGonePoll):
+		}
+	}
 }

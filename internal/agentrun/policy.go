@@ -221,12 +221,14 @@ func enforceNarrowing(ctx context.Context, cfg *Config, sandboxName string, cred
 		fmt.Printf("[agent-run] warning: sandbox delete failed: %v (will retry during cleanup)\n", derr)
 		status = fmt.Sprintf("SANDBOX DELETE FAILED (%v; cleanup will retry, otherwise run: openshell sandbox delete %s)", derr, sandboxName)
 	} else {
+		fmt.Printf("[agent-run] Sandbox %s deletion accepted.\n", sandboxName)
 		out.SandboxDeleted = true
 	}
 	if cred != nil && cred.Revocable() {
 		if rerr := revokeTokenFn(cred.Token); rerr != nil {
 			fmt.Printf("[agent-run] warning: token revoke failed: %v (will retry during cleanup)\n", rerr)
 		} else {
+			fmt.Println("[agent-run] Installation token revoked.")
 			out.TokenRevoked = true
 		}
 	}

@@ -18,7 +18,15 @@ import (
 type flowMock struct {
 	m      *mockCmd
 	sbName string
-	onExec func(joined string) (handled bool, err error)
+	// sbDeleted is set by `sandbox delete <sbName>`. Like the gateway, whose
+	// delete is asynchronous, `sandbox get` keeps reporting the sandbox for
+	// getsUntilGone more polls, and `provider delete` is refused while it
+	// is still there ("is attached to sandbox(es)").
+	sbDeleted     bool
+	getsUntilGone int
+	// failProviderDelete makes every `provider delete` fail outright.
+	failProviderDelete bool
+	onExec             func(joined string) (handled bool, err error)
 	// execs records each execCmd/execCmdSilent/execInteractive call with the
 	// context it ran under.
 	execs []execRecord
@@ -64,7 +72,21 @@ func runFlow(t *testing.T, onExec func(joined string) (bool, error), fn func(f *
 			case strings.Contains(joined, "list-profiles"):
 				return "[]", nil
 			case f.sbName != "" && joined == "sandbox get "+f.sbName+" -o json":
+				if f.sbDeleted && f.getsUntilGone == 0 {
+					return "Error: × sandbox not found", errors.New("exit status 1")
+				}
+				if f.sbDeleted {
+					f.getsUntilGone--
+				}
 				return `{"name":"` + f.sbName + `","phase":"Ready"}`, nil
+			case strings.HasPrefix(joined, "provider delete "):
+				if f.failProviderDelete {
+					return "Error: × permission denied", errors.New("exit status 1")
+				}
+				if f.sbName != "" && (!f.sbDeleted || f.getsUntilGone > 0) {
+					return "! Failed to delete provider: provider is attached to sandbox(es): " + f.sbName, errors.New("exit status 1")
+				}
+				return "✓ Deleted provider", nil
 			case strings.Contains(joined, "policy get") && strings.Contains(joined, "--full"):
 				return eff, nil
 			case strings.Contains(joined, "policy get") && strings.Contains(joined, "--rev 3"):
@@ -84,9 +106,20 @@ func runFlow(t *testing.T, onExec func(joined string) (bool, error), fn func(f *
 					return err
 				}
 			}
+			if f.sbName != "" && joined == "sandbox delete "+f.sbName {
+				f.sbDeleted = true
+			}
 			return nil
 		}
 		execCmdFn, execCmdSilentFn, execInteractiveFn = exec, exec, exec
+		output := execCmdOutputFn
+		execCmdOutputFn = func(ctx context.Context, name string, args ...string) (string, error) {
+			f.execs = append(f.execs, execRecord{name + " " + strings.Join(args, " "), ctx})
+			return output(ctx, name, args...)
+		}
+		origT, origP := sandboxGoneTimeout, sandboxGonePoll
+		sandboxGoneTimeout, sandboxGonePoll = time.Second, time.Millisecond
+		defer func() { sandboxGoneTimeout, sandboxGonePoll = origT, origP }()
 		captureStdout(t, func() { fn(f) })
 	})
 }
@@ -397,6 +430,70 @@ func TestRunCleanupAfterInterruptUsesDetachedContext(t *testing.T) {
 		}
 		if deletes != 1 {
 			t.Errorf("sandbox deletes = %d, want 1", deletes)
+		}
+	})
+}
+
+// Ctrl-C during narrowing: the fail-closed path deletes the sandbox, and the
+// gateway finishes that delete asynchronously, refusing provider deletes until
+// then. Cleanup must wait for the sandbox to go, then delete every provider.
+func TestRunFailClosedWaitsForSandboxBeforeProviderDeletes(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	onExec := func(joined string) (bool, error) {
+		if strings.Contains(joined, "--remove-rule mise_bootstrap") {
+			cancel()
+			return true, errors.New("signal: interrupt")
+		}
+		return false, nil
+	}
+	runFlow(t, onExec, func(f *flowMock) {
+		f.getsUntilGone = 3
+		var err error
+		out := captureStdout(t, func() { err = RunContext(ctx, flowConfig()) })
+		if !errors.Is(err, ErrInterrupted) || !strings.Contains(err.Error(), "egress narrowing failed") {
+			t.Fatalf("err = %v", err)
+		}
+		for _, want := range []string{
+			"deletion accepted", "Waiting for sandbox " + f.sbName + " to be removed ... done",
+			"Deleting provider: " + GitHubProviderName + " ... done", "Deleting provider: claude-code ... done",
+		} {
+			if !strings.Contains(out, want) {
+				t.Errorf("output missing %q:\n%s", want, out)
+			}
+		}
+		if strings.Contains(out, "warning") {
+			t.Errorf("unexpected warning:\n%s", out)
+		}
+		calls := callStrings(f.m)
+		if n := countMatching(calls, "provider delete "+GitHubProviderName); n != 2 { // pre-create delete + cleanup
+			t.Errorf("github provider deletes = %d, want 2 (no refused attempt): %v", n, calls)
+		}
+		narrow := slices.IndexFunc(f.execs, func(r execRecord) bool { return strings.Contains(r.cmd, "--remove-rule") })
+		if narrow < 0 {
+			t.Fatal("narrowing never ran")
+		}
+		for _, r := range f.execs[narrow+1:] {
+			if (strings.Contains(r.cmd, "provider delete") || strings.Contains(r.cmd, "sandbox get")) &&
+				(r.ctx.Err() != nil || r.ctx.Value(detachedKey{}) == nil) {
+				t.Errorf("%q ran under a cancelled or non-detached context", r.cmd)
+			}
+		}
+	})
+}
+
+// A provider delete that fails is reported with the manual command, not "done".
+func TestRunCleanupReportsFailedProviderDelete(t *testing.T) {
+	runFlow(t, nil, func(f *flowMock) {
+		f.failProviderDelete = true
+		out := captureStdout(t, func() {
+			if err := Run(flowConfig()); err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+		})
+		want := "Deleting provider: " + GitHubProviderName + " ... warning: exit status 1: Error: × permission denied " +
+			"(delete it manually: openshell provider delete " + GitHubProviderName + ")"
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
 		}
 	})
 }

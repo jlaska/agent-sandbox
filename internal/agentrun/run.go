@@ -102,6 +102,7 @@ func run(ctx context.Context, cfg *Config) error {
 	var (
 		sandboxName      string
 		cleanupSandbox   string // set once creation starts; the deferred cleanup deletes it
+		sandboxDeleting  bool   // a delete of sandboxName was accepted (it finishes asynchronously)
 		ghCred           *GitHubCredential
 		providersCreated []string
 	)
@@ -132,6 +133,7 @@ func run(ctx context.Context, cfg *Config) error {
 				fmt.Printf("warning: %v (delete it manually: openshell sandbox delete %s)\n", err, cleanupSandbox)
 			} else {
 				fmt.Println("done")
+				sandboxDeleting = true
 			}
 		}
 		if ghCred != nil && ghCred.Revocable() {
@@ -142,10 +144,23 @@ func run(ctx context.Context, cfg *Config) error {
 				fmt.Println("done")
 			}
 		}
+		// The gateway refuses to delete a provider while the sandbox is still
+		// attached, and the sandbox delete above only starts the removal.
+		if sandboxDeleting && len(providersCreated) > 0 {
+			fmt.Printf("  Waiting for sandbox %s to be removed ... ", sandboxName)
+			if err := waitSandboxAbsent(ctx, sandboxName); err != nil {
+				fmt.Printf("warning: %v\n", err)
+			} else {
+				fmt.Println("done")
+			}
+		}
 		for _, prov := range providersCreated {
 			fmt.Printf("  Deleting provider: %s ... ", prov)
-			_ = execCmdSilent(ctx, "openshell", "provider", "delete", prov)
-			fmt.Println("done")
+			if err := deleteProvider(ctx, prov); err != nil {
+				fmt.Printf("warning: %v (delete it manually: openshell provider delete %s)\n", err, prov)
+			} else {
+				fmt.Println("done")
+			}
 		}
 		fmt.Println("  Cleanup complete.")
 	})
@@ -361,6 +376,7 @@ func run(ctx context.Context, cfg *Config) error {
 		// a failed sandbox delete is retried there.
 		if res.SandboxDeleted {
 			cleanupSandbox = ""
+			sandboxDeleting = true
 		}
 		if res.TokenRevoked {
 			ghCred = nil

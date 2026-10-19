@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -511,5 +512,47 @@ func TestFindRepoRoot(t *testing.T) {
 		if root == "" {
 			t.Error("findRepoRoot returned empty")
 		}
+	})
+}
+
+func TestDeleteProvider(t *testing.T) {
+	origT, origP := sandboxGoneTimeout, sandboxGonePoll
+	sandboxGoneTimeout, sandboxGonePoll = 50*time.Millisecond, time.Millisecond
+	defer func() { sandboxGoneTimeout, sandboxGonePoll = origT, origP }()
+	attached := "! Failed to delete provider p: provider 'p' is attached to sandbox(es): sb\nError: × failed to delete 1 provider: p"
+
+	t.Run("refused while attached, then deleted", func(t *testing.T) {
+		withMockExec(t, func(m *mockCmd) {
+			n := 0
+			m.execOutput = func(string, ...string) (string, error) {
+				if n++; n < 3 {
+					return attached, errors.New("exit status 1")
+				}
+				return "✓ Deleted provider p", nil
+			}
+			if err := deleteProvider(context.Background(), "p"); err != nil || n != 3 {
+				t.Errorf("err=%v attempts=%d", err, n)
+			}
+		})
+	})
+	t.Run("still attached at the deadline", func(t *testing.T) {
+		withMockExec(t, func(m *mockCmd) {
+			m.execOutput = func(string, ...string) (string, error) { return attached, errors.New("exit status 1") }
+			err := deleteProvider(context.Background(), "p")
+			if err == nil || !strings.Contains(err.Error(), "is attached to sandbox(es): sb") {
+				t.Errorf("err = %v", err)
+			}
+		})
+	})
+	t.Run("other failure is not retried", func(t *testing.T) {
+		withMockExec(t, func(m *mockCmd) {
+			m.execOutput = func(string, ...string) (string, error) {
+				return "Error: × provider not found", errors.New("exit status 1")
+			}
+			err := deleteProvider(context.Background(), "p")
+			if err == nil || !strings.Contains(err.Error(), "provider not found") || len(m.calls) != 1 {
+				t.Errorf("err=%v calls=%d", err, len(m.calls))
+			}
+		})
 	})
 }

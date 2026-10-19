@@ -288,6 +288,12 @@ var (
 // registered the name); only a name that stays taken is.
 func waitSandboxGone(ctx context.Context, name string) error {
 	_ = execCmdSilent(ctx, "openshell", "sandbox", "delete", name)
+	return waitSandboxAbsent(ctx, name)
+}
+
+// waitSandboxAbsent waits until the gateway no longer knows sandbox name, up
+// to sandboxGoneTimeout.
+func waitSandboxAbsent(ctx context.Context, name string) error {
 	deadline := time.Now().Add(sandboxGoneTimeout)
 	for {
 		_, exists, err := sandboxPhase(ctx, name)
