@@ -69,7 +69,7 @@ func TestPrintDiagnostics(t *testing.T) {
 		})
 		for _, want := range []string{
 			"openshell 0.0.113", "Version gate:       FAIL", "agent-pi:local",
-			"not pinned yet", "Compute driver:     podman",
+			"ghcr.io/jlaska/agent-claude:", "Compute driver:     podman",
 			"[openshell.drivers.podman] allow_driver_config = true",
 		} {
 			if !strings.Contains(out, want) {
