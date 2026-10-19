@@ -1,6 +1,7 @@
 package agentrun
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
@@ -106,7 +107,7 @@ func TestGetAppPrivateKey(t *testing.T) {
 
 	t.Run("normal PEM key", func(t *testing.T) {
 		_, keyPEM := testRSAKey(t)
-		execCmdOutputFn = func(name string, args ...string) (string, error) {
+		execCmdOutputFn = func(_ context.Context, name string, args ...string) (string, error) {
 			return string(keyPEM), nil
 		}
 		result, err := getAppPrivateKey()
@@ -121,7 +122,7 @@ func TestGetAppPrivateKey(t *testing.T) {
 	t.Run("hex-encoded PEM key", func(t *testing.T) {
 		_, keyPEM := testRSAKey(t)
 		hexKey := hex.EncodeToString(keyPEM)
-		execCmdOutputFn = func(name string, args ...string) (string, error) {
+		execCmdOutputFn = func(_ context.Context, name string, args ...string) (string, error) {
 			return hexKey, nil
 		}
 		result, err := getAppPrivateKey()
@@ -134,7 +135,7 @@ func TestGetAppPrivateKey(t *testing.T) {
 	})
 
 	t.Run("keychain error", func(t *testing.T) {
-		execCmdOutputFn = func(name string, args ...string) (string, error) {
+		execCmdOutputFn = func(_ context.Context, name string, args ...string) (string, error) {
 			return "", fmt.Errorf("not found")
 		}
 		_, err := getAppPrivateKey()
@@ -144,7 +145,7 @@ func TestGetAppPrivateKey(t *testing.T) {
 	})
 
 	t.Run("empty keychain value", func(t *testing.T) {
-		execCmdOutputFn = func(name string, args ...string) (string, error) {
+		execCmdOutputFn = func(_ context.Context, name string, args ...string) (string, error) {
 			return "", nil
 		}
 		_, err := getAppPrivateKey()
@@ -301,7 +302,7 @@ func TestMintTokenIntegration(t *testing.T) {
 
 	_, keyPEM := testRSAKey(t)
 
-	execCmdOutputFn = func(name string, args ...string) (string, error) {
+	execCmdOutputFn = func(_ context.Context, name string, args ...string) (string, error) {
 		if name == "security" {
 			return string(keyPEM), nil
 		}

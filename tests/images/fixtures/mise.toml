@@ -1,0 +1,5 @@
+# Fixture for tests/images/smoke.sh: exercises mise inside the image with a
+# core-registry tool (kubectl) and a pipx-backed tool (pre-commit, via uv).
+[tools]
+kubectl = "1.37.1"
+"pipx:pre-commit" = "4.7.0"

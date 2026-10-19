@@ -1,6 +1,6 @@
 id: litellm-inference
 display_name: "LiteLLM Proxy (Homelab)"
-description: "LiteLLM proxy inference provider — routes to Vertex AI via homelab cluster. Used by Claude Code and Pi."
+description: "LiteLLM proxy inference provider — routes to Vertex AI via homelab cluster. Used by Claude Code, Pi and opencode."
 category: inference
 credentials:
   - name: litellm_api_key
@@ -33,15 +33,11 @@ endpoints:
     protocol: rest
     access: read-write
     enforcement: enforce
+# Real paths in the agent-* images (pi runs under node); see openshell/images/*/binaries.txt.
 binaries:
-  - /usr/bin/claude
   - /usr/local/bin/claude
-  - /usr/bin/node
   - /usr/local/bin/node
-  - /usr/bin/pi
-  - /usr/local/bin/pi
-  - /usr/bin/python3
-  - /usr/local/bin/python3
+  - /usr/local/bin/opencode
+  - /usr/bin/python3.12
   - /usr/bin/curl
-  - /usr/local/bin/curl
 inference_capable: true

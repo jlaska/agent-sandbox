@@ -1,6 +1,7 @@
 package agentrun
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -30,13 +31,9 @@ func TestParseArgs(t *testing.T) {
 			},
 		},
 		{
-			name:    "valid shell",
+			name:    "shell harness removed",
 			args:    []string{"jlaska/agent-sandbox", "shell"},
-			wantErr: false,
-			want: &Config{
-				Repo:    "jlaska/agent-sandbox",
-				Harness: "shell",
-			},
+			wantErr: true,
 		},
 		{
 			name:    "with model override",
@@ -268,5 +265,148 @@ func TestConfigValidate(t *testing.T) {
 				t.Errorf("Validate() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestParseArgsNewFlags(t *testing.T) {
+	base := []string{"jlaska/agent-sandbox", "claude"}
+	ocBase := []string{"jlaska/agent-sandbox", "opencode"}
+	t.Setenv("ANTHROPIC_API_KEY", "sk-test")
+	t.Setenv("LITELLM_API_KEY", "sk-lite")
+
+	t.Run("all flags", func(t *testing.T) {
+		cfg, err := ParseArgs(append(append([]string{}, ocBase...),
+			"--image", "agent-opencode:local", "--no-mise", "--fresh-cache",
+			"--mise-allow-host", "example.com", "--mise-allow-host", "dl.example.org:8443",
+			"--inference", "anthropic", "--driver", "podman"))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cfg.Image != "agent-opencode:local" || !cfg.NoMise || !cfg.FreshCache ||
+			cfg.Inference != "anthropic" || cfg.Driver != "podman" {
+			t.Errorf("unexpected config: %+v", cfg)
+		}
+		if len(cfg.MiseAllowHosts) != 2 || cfg.MiseAllowHosts[0] != "example.com" || cfg.MiseAllowHosts[1] != "dl.example.org:8443" {
+			t.Errorf("MiseAllowHosts = %v", cfg.MiseAllowHosts)
+		}
+	})
+
+	t.Run("flags before positionals and = form", func(t *testing.T) {
+		cfg, err := ParseArgs([]string{"--driver", "docker", "--image=x:1", "jlaska/agent-sandbox", "pi"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if cfg.Driver != "docker" || cfg.Image != "x:1" || cfg.Harness != "pi" {
+			t.Errorf("unexpected config: %+v", cfg)
+		}
+	})
+
+	for _, d := range []string{"docker", "podman", "kubernetes", "vm"} {
+		if _, err := ParseArgs(append(base, "--driver", d)); err != nil {
+			t.Errorf("--driver %s rejected: %v", d, err)
+		}
+	}
+	for _, i := range []string{"litellm", "anthropic"} {
+		if _, err := ParseArgs(append(append([]string{}, ocBase...), "--inference", i)); err != nil {
+			t.Errorf("--inference %s rejected: %v", i, err)
+		}
+	}
+
+	bad := map[string][]string{
+		"bad driver":          {"--driver", "lxc"},
+		"bad inference":       {"--inference", "openai"},
+		"host with scheme":    {"--mise-allow-host", "https://example.com"},
+		"host with path":      {"--mise-allow-host", "example.com/x"},
+		"host wildcard":       {"--mise-allow-host", "*.example.com"},
+		"host bad port":       {"--mise-allow-host", "example.com:99999"},
+		"host zero port":      {"--mise-allow-host", "example.com:0"},
+		"host non-numeric":    {"--mise-allow-host", "example.com:http"},
+		"host empty":          {"--mise-allow-host", ""},
+		"image whitespace":    {"--image", "a b"},
+		"inference on claude": {"--inference", "anthropic"},
+		"fresh with no-cache": {"--fresh-cache", "--no-cache"},
+	}
+	for name, extra := range bad {
+		t.Run(name, func(t *testing.T) {
+			if _, err := ParseArgs(append(append([]string{}, base...), extra...)); err == nil {
+				t.Errorf("expected error for %v", extra)
+			}
+		})
+	}
+}
+
+func TestShellHarnessRejected(t *testing.T) {
+	_, err := ParseArgs([]string{"jlaska/agent-sandbox", "shell"})
+	if err == nil || !strings.Contains(err.Error(), "shell harness was removed") {
+		t.Errorf("err = %v", err)
+	}
+}
+
+// The opencode backend is resolved once in Run, before anything is created;
+// a run with no usable key fails without running a single command.
+func TestRunOpencodeBackendValidatedEarly(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("LITELLM_API_KEY", "")
+	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "")
+	cfg, err := ParseArgs([]string{"jlaska/agent-sandbox", "opencode"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	withMockExec(t, func(m *mockCmd) {
+		if err := Run(cfg); err == nil {
+			t.Error("opencode with no credentials must fail before any sandbox exists")
+		}
+		t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "oauth")
+		if err := Run(cfg); err == nil || !strings.Contains(err.Error(), "OAUTH") {
+			t.Errorf("oauth-only err = %v", err)
+		}
+		if len(m.calls) != 0 {
+			t.Errorf("commands ran before the backend check: %v", callStrings(m))
+		}
+	})
+	if _, err := ParseArgs([]string{"jlaska/agent-sandbox", "claude", "--inference", "litellm"}); err == nil ||
+		!strings.Contains(err.Error(), "opencode harness only") {
+		t.Errorf("err = %v", err)
+	}
+}
+
+// --diag runs where a run would be refused: with no positionals at all, and
+// for opencode without an inference key (whose diag line explains why).
+func TestParseArgsDiag(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("LITELLM_API_KEY", "")
+	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "")
+
+	cfg, err := ParseArgs([]string{"--diag"})
+	if err != nil || !cfg.Diag || cfg.Help {
+		t.Fatalf("bare --diag: cfg=%+v err=%v", cfg, err)
+	}
+
+	cfg, err = ParseArgs([]string{"jlaska/agent-sandbox", "opencode", "--diag"})
+	if err != nil {
+		t.Fatalf("opencode --diag without a key: %v", err)
+	}
+	if cfg.Repo != "jlaska/agent-sandbox" || cfg.Harness != "opencode" || !cfg.Diag {
+		t.Errorf("cfg = %+v", cfg)
+	}
+	withMockExec(t, func(m *mockCmd) {
+		var runErr error
+		out := captureStdout(t, func() { runErr = Run(cfg) })
+		if runErr != nil {
+			t.Fatal(runErr)
+		}
+		if !strings.Contains(out, "opencode backend:   unavailable (") {
+			t.Errorf("diag lacks the opencode backend line:\n%s", out)
+		}
+	})
+}
+
+func TestParseArgsMiseUnsafe(t *testing.T) {
+	cfg, err := ParseArgs([]string{"jlaska/agent-sandbox", "claude", "--mise-unsafe"})
+	if err != nil || !cfg.MiseUnsafe {
+		t.Fatalf("cfg=%+v err=%v", cfg, err)
+	}
+	if _, err := ParseArgs([]string{"jlaska/agent-sandbox", "claude", "--mise-unsafe", "--no-mise"}); err == nil {
+		t.Error("--mise-unsafe with --no-mise must be rejected")
 	}
 }

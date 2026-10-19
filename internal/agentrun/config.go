@@ -3,14 +3,15 @@ package agentrun
 import (
 	"flag"
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 )
 
-// Supported harness types.
-const (
-	HarnessClaude = "claude"
-	HarnessPi     = "pi"
-	HarnessShell  = "shell"
+// Supported values for --inference and --driver.
+var (
+	inferenceBackends = []string{"litellm", "anthropic"}
+	computeDrivers    = []string{"docker", "podman", "kubernetes", "vm"}
 )
 
 // Config holds parsed command-line arguments and configuration.
@@ -30,15 +31,18 @@ type Config struct {
 	RevokeToken    string
 	GeneratePolicy bool
 
+	// Image/toolchain flags
+	Image          string   // --image: override the harness image ref
+	NoMise         bool     // --no-mise: skip toolchain install
+	MiseUnsafe     bool     // --mise-unsafe: install without the mise hardening
+	FreshCache     bool     // --fresh-cache: clear the mise cache before install
+	NoCache        bool     // --no-cache: don't mount a mise cache
+	MiseAllowHosts []string // --mise-allow-host (repeatable, host[:port])
+	Inference      string   // --inference litellm|anthropic (opencode only)
+	Driver         string   // --driver: override compute driver detection
+
 	// Passthrough args (everything after --)
 	PassthroughArgs []string
-}
-
-// harnessCommands maps harness names to their shell commands.
-var harnessCommands = map[string]string{
-	HarnessClaude: "claude",
-	HarnessPi:     "pi",
-	HarnessShell:  "bash",
 }
 
 // envVarCollector implements flag.Value for repeatable --env flags.
@@ -53,6 +57,47 @@ func (e *envVarCollector) Set(val string) error {
 	}
 	*e.values = append(*e.values, val)
 	return nil
+}
+
+// hostPortCollector implements flag.Value for repeatable --mise-allow-host flags.
+type hostPortCollector struct {
+	values *[]string
+}
+
+func (h *hostPortCollector) String() string { return "" }
+func (h *hostPortCollector) Set(val string) error {
+	if err := validateHostPort(val); err != nil {
+		return err
+	}
+	*h.values = append(*h.values, val)
+	return nil
+}
+
+var hostnamePattern = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)*$`)
+
+// validateHostPort checks a host[:port] value: a bare hostname (no scheme,
+// path or wildcard) with an optional port in 1-65535.
+func validateHostPort(val string) error {
+	host, port, hasPort := strings.Cut(val, ":")
+	if !hostnamePattern.MatchString(host) {
+		return fmt.Errorf("invalid host %q: expected host[:port] (no scheme, path or wildcard)", val)
+	}
+	if hasPort {
+		n, err := strconv.Atoi(port)
+		if err != nil || n < 1 || n > 65535 {
+			return fmt.Errorf("invalid port in %q: must be 1-65535", val)
+		}
+	}
+	return nil
+}
+
+func oneOf(val string, allowed []string) bool {
+	for _, a := range allowed {
+		if val == a {
+			return true
+		}
+	}
+	return false
 }
 
 // ParseArgs parses command-line arguments into a Config.
@@ -71,6 +116,15 @@ func ParseArgs(args []string) (*Config, error) {
 	fs.StringVar(&cfg.RevokeToken, "revoke-token", "", "revoke a previously minted token")
 	fs.BoolVar(&cfg.GeneratePolicy, "generate-policy", false, "generate a repo-scoped policy file and print its path")
 
+	fs.StringVar(&cfg.Image, "image", "", "override the harness image ref")
+	fs.BoolVar(&cfg.NoMise, "no-mise", false, "skip mise toolchain install")
+	fs.BoolVar(&cfg.MiseUnsafe, "mise-unsafe", false, "install the mise toolchain without hardening (hooks on, paranoid mode off, no dependency cooldown)")
+	fs.BoolVar(&cfg.FreshCache, "fresh-cache", false, "clear the mise cache before install")
+	fs.BoolVar(&cfg.NoCache, "no-cache", false, "do not mount a mise cache")
+	fs.Var(&hostPortCollector{values: &cfg.MiseAllowHosts}, "mise-allow-host", "extra host[:port] allowed during mise install (repeatable)")
+	fs.StringVar(&cfg.Inference, "inference", "", "inference backend: litellm|anthropic (opencode only)")
+	fs.StringVar(&cfg.Driver, "driver", "", "compute driver override: docker|podman|kubernetes|vm")
+
 	// Split at -- separator: everything after becomes passthrough args.
 	for i, a := range args {
 		if a == "--" {
@@ -82,7 +136,10 @@ func ParseArgs(args []string) (*Config, error) {
 
 	// Separate flags from positional args so flags work in any position.
 	var flagArgs, positional []string
-	flagsWithValue := map[string]bool{"--model": true, "--revoke-token": true, "--env": true, "--github-token": true}
+	flagsWithValue := map[string]bool{
+		"--model": true, "--revoke-token": true, "--env": true, "--github-token": true,
+		"--image": true, "--mise-allow-host": true, "--inference": true, "--driver": true,
+	}
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		if strings.HasPrefix(a, "-") {
@@ -111,6 +168,19 @@ func ParseArgs(args []string) (*Config, error) {
 	}
 
 	if cfg.RevokeToken != "" {
+		return cfg, nil
+	}
+
+	// --diag must work when a run would be refused (no inference key, no args
+	// at all), so it skips the positional requirements and Validate. Given
+	// positionals still scope it (cache volume, image override).
+	if cfg.Diag {
+		if len(positional) > 0 {
+			cfg.Repo = positional[0]
+		}
+		if len(positional) > 1 {
+			cfg.Harness = positional[1]
+		}
 		return cfg, nil
 	}
 
@@ -162,11 +232,34 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("harness is required")
 	}
 
-	switch c.Harness {
-	case HarnessClaude, HarnessPi, HarnessShell:
-		// valid
-	default:
-		return fmt.Errorf("unknown harness %q; supported: %s", c.Harness, strings.Join([]string{HarnessClaude, HarnessPi, HarnessShell}, ", "))
+	if _, err := LookupHarness(c.Harness); err != nil {
+		return err
+	}
+
+	if c.Inference != "" && !oneOf(c.Inference, inferenceBackends) {
+		return fmt.Errorf("invalid --inference %q; supported: %s", c.Inference, strings.Join(inferenceBackends, ", "))
+	}
+	if c.Inference != "" && c.Harness != HarnessOpencode {
+		return fmt.Errorf("--inference applies to the opencode harness only (harness is %q)", c.Harness)
+	}
+	// --fresh-cache clears the persistent per-repo cache; --no-cache means there
+	// is none, so the combination is contradictory (and would silently do nothing).
+	if c.FreshCache && c.NoCache {
+		return fmt.Errorf("--fresh-cache and --no-cache are mutually exclusive: --no-cache mounts no persistent cache, so there is nothing to clear")
+	}
+	if c.MiseUnsafe && c.NoMise {
+		return fmt.Errorf("--mise-unsafe and --no-mise are mutually exclusive: --no-mise installs nothing")
+	}
+	if c.Driver != "" && !oneOf(c.Driver, computeDrivers) {
+		return fmt.Errorf("invalid --driver %q; supported: %s", c.Driver, strings.Join(computeDrivers, ", "))
+	}
+	if strings.ContainsAny(c.Image, " \t\n") {
+		return fmt.Errorf("invalid --image %q: must not contain whitespace", c.Image)
+	}
+	for _, h := range c.MiseAllowHosts {
+		if err := validateHostPort(h); err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -175,7 +268,7 @@ func (c *Config) Validate() error {
 func printUsage() {
 	fmt.Println("Usage: agent-run <owner/repo> <harness> [options] [-- <harness-args>...]")
 	fmt.Println()
-	fmt.Printf("  Harnesses:  %s, %s, %s\n", HarnessClaude, HarnessPi, HarnessShell)
+	fmt.Printf("  Harnesses:  %s\n", strings.Join(HarnessNames(), ", "))
 	fmt.Println()
 	fmt.Println("  Inference auth is configured via environment variables:")
 	fmt.Println("    ANTHROPIC_API_KEY          Direct API key")
@@ -185,8 +278,24 @@ func printUsage() {
 	fmt.Println()
 	fmt.Println("  --model <m>     Override model (passed to harness CLI)")
 	fmt.Println("  --env KEY=VAL   Pass env var to sandbox (repeatable)")
+	fmt.Println("  --image <ref>   Override the harness image (default: pinned in images.yaml)")
+	fmt.Println("  --no-mise       Skip mise toolchain install")
+	fmt.Println("  --mise-unsafe   Install mise tools without hardening (hooks on, paranoid off,\n                  no 3-day dependency cooldown)")
+	fmt.Println("  --fresh-cache   Clear the mise cache before install")
+	fmt.Println("  --no-cache      Do not mount a mise cache")
+	fmt.Println("  --mise-allow-host host[:port]")
+	fmt.Println("                  Extra host allowed during mise install (repeatable)")
+	fmt.Println("  --inference litellm|anthropic")
+	fmt.Println("                  Inference backend (opencode only)")
+	fmt.Println("  --driver docker|podman|kubernetes|vm")
+	fmt.Println("                  Override compute driver detection")
 	fmt.Println("  --diag          Print diagnostic info")
+	fmt.Println("  --github-token <pat>\n                  GitHub PAT (alternative to the App token)")
 	fmt.Println("  --list-repos    List approved repositories")
+	fmt.Println("  --mint-token    Mint a repo-scoped token and print it")
+	fmt.Println("  --revoke-token <t>\n                  Revoke a previously minted token")
+	fmt.Println("  --generate-policy\n                  Generate a repo-scoped policy file and print its path")
+	fmt.Println("  --help          Show this help")
 }
 
 func printRepos() {

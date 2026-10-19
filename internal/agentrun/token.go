@@ -2,6 +2,7 @@ package agentrun
 
 import (
 	"bytes"
+	"context"
 	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
@@ -81,7 +82,7 @@ func RevokeToken(token string) error {
 }
 
 func getAppPrivateKey() ([]byte, error) {
-	raw, err := execCmdOutputFn("security", "find-generic-password",
+	raw, err := execCmdOutputFn(context.Background(), "security", "find-generic-password",
 		"-s", KeychainService,
 		"-a", KeychainAccount,
 		"-w")

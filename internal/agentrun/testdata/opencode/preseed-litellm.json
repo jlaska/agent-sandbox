@@ -1,0 +1,23 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "autoupdate": false,
+  "enabled_providers": [
+    "litellm"
+  ],
+  "provider": {
+    "litellm": {
+      "models": {
+        "claude-sonnet-4-5": {
+          "name": "claude-sonnet-4-5"
+        }
+      },
+      "name": "LiteLLM",
+      "npm": "@ai-sdk/openai-compatible",
+      "options": {
+        "apiKey": "{env:LITELLM_API_KEY}",
+        "baseURL": "https://litellm.example.com/v1"
+      }
+    }
+  },
+  "share": "disabled"
+}

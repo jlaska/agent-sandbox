@@ -1,0 +1,15 @@
+{
+  "scope": "sandbox",
+  "sandbox": "a-claude-123",
+  "version": 3,
+  "active_version": 3,
+  "hash": "abc123",
+  "status": "effective",
+  "policy": {
+    "version": 1,
+    "network_policies": {
+      "github_git": {"name": "github-git"},
+      "mise_bootstrap": {"name": "mise-bootstrap", "binaries": [{"path": "/usr/local/bin/mise"}]}
+    }
+  }
+}

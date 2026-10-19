@@ -1,5 +1,7 @@
 # Phase 5 — Multi-agent Compatibility
 
+> Historical record. The `shell` harness has since been removed and `opencode` added, and sandboxes now run from per-harness images. For current usage see the [README](../README.md) and [phase7-harness-images.md](phase7-harness-images.md).
+
 ## Summary
 
 Phase 5 validates that multiple coding agents can operate within the OpenShell sandbox while sharing the same GitHub security policy. Each agent independently authenticates to its inference provider through the LiteLLM proxy and passes the full GitHub acceptance matrix.
@@ -16,7 +18,6 @@ agent-run <repo> <harness> [--provider <provider>] [--model <model>] [--max]
 |---------|-------------------|--------|-----|
 | claude  | ✓ | ✓ | ✓ |
 | pi      | ✓ |   |   |
-| shell   | (none) | | |
 
 ### Examples
 
@@ -29,7 +30,6 @@ agent-run jlaska/agent-sandbox-test claude --provider api                     # 
 agent-run jlaska/agent-sandbox-test claude --provider litellm --max           # Max subscription billing
 agent-run jlaska/agent-sandbox-test pi                                        # litellm, default model
 agent-run jlaska/agent-sandbox-test pi --model go-mimo-v2.5                   # litellm, specific model
-agent-run jlaska/agent-sandbox-test shell                                     # no inference
 ```
 
 `--model` is passed through to the harness CLI as `--model <value>`. When omitted, each harness uses its own default.
@@ -42,7 +42,7 @@ The launcher separates three concerns: harness (which agent binary), provider (w
 agent-run <repo> <harness> [--provider <provider>] [--model <model>]
   │
   ├── GitHub provider (github-agent)
-  │     └── credential: api_token (from minted installation token)
+  │     └── credentials: GITHUB_TOKEN, GH_TOKEN (from minted installation token; OpenShell 0.1.4 stored keys are the profile's env_vars)
   │
   ├── Inference provider (one of):
   │     ├── litellm-inference  → litellm.internal.keener.us
@@ -60,7 +60,7 @@ agent-run <repo> <harness> [--provider <provider>] [--model <model>]
 
 Claude Code uses API key mode with the LiteLLM proxy:
 
-- `ANTHROPIC_API_KEY` is set to a deferred reference (`$litellm_api_key`) that the sandbox resolves to the provider placeholder. The gateway injects the real credential in the `x-api-key` HTTP header.
+- `ANTHROPIC_API_KEY` is an alias of the `LITELLM_API_KEY` provider placeholder (`export ANTHROPIC_API_KEY="$LITELLM_API_KEY"`). The gateway injects the real credential in the `x-api-key` HTTP header.
 - `ANTHROPIC_BASE_URL` points to the LiteLLM proxy endpoint.
 - The builtin `claude-code` OpenShell provider is required because OpenShell auto-detects the `claude` binary and demands its corresponding provider.
 
@@ -74,7 +74,7 @@ An optional `--max` flag on `agent-run` adds `ANTHROPIC_CUSTOM_HEADERS` with the
 |---|---|---|
 | GitHub token | Yes | Provider placeholder; gateway injects real token |
 | LiteLLM API key | Yes | Provider placeholder; gateway injects real key |
-| ANTHROPIC_API_KEY env var | Sentinel only | Set to `$litellm_api_key` (provider placeholder) |
+| ANTHROPIC_API_KEY env var | Sentinel only | Alias of `$LITELLM_API_KEY` (provider placeholder) |
 | LiteLLM bearer token (--max) | Partially | Passed via env var when Max mode is used |
 
 ### Known limitation
@@ -94,7 +94,7 @@ The LiteLLM key's model access list must include the models Claude Code requests
 Pi uses the `pi-provider-litellm` plugin to connect to the LiteLLM proxy:
 
 - `LITELLM_BASE_URL` points to the LiteLLM proxy endpoint.
-- `LITELLM_API_KEY` is mapped to the `litellm_api_key` provider placeholder.
+- `LITELLM_API_KEY` is the `litellm-inference` provider placeholder (stored key `LITELLM_API_KEY`).
 - Pi is not pre-installed in the default OpenShell sandbox image. `agent-run.sh` installs it at sandbox creation via `npm install -g @earendil-works/pi-coding-agent` to `/sandbox/.npm-global`.
 
 ### npm registry access
@@ -129,7 +129,7 @@ Per the Phase 5 plan: "OpenClaw proven, or a concrete upstream blocker is docume
 |---|---|
 | `openshell/litellm-inference-profile.yaml` | Custom OpenShell provider profile for LiteLLM inference |
 | `openshell/sandbox-policy.yaml` | Updated with LiteLLM, npm registry, and telemetry network policies |
-| `scripts/agent-run.sh` | Updated with multi-agent support (claude, pi, shell) and inference providers |
+| `scripts/agent-run.sh` | Updated with multi-agent support (claude, pi) and inference providers |
 | `tests/phase5-exit-gate.sh` | Per-agent acceptance matrix test suite (16 tests each) |
 | `docs/phase5-multi-agent.md` | This document |
 

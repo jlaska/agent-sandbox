@@ -1,5 +1,7 @@
 # Phase 3 — Local OpenShell and Providers v2
 
+> Historical record for OpenShell 0.0.113. `agent-run` now requires OpenShell 0.1.4 or newer, which has no in-place upgrade from 0.0.x; see "Upgrading from OpenShell 0.0.x" in the [README](../README.md).
+
 **Date:** 2026-08-26
 **OpenShell version:** 0.0.113 (pinned)
 **Compute driver:** Podman 6.0.2 (Apple Hypervisor VM)
@@ -9,7 +11,7 @@
 OpenShell was installed via the official install script with version pinning:
 
 ```bash
-OPENSHELL_VERSION=v0.0.113 curl -LsSf https://raw.githubusercontent.com/NVIDIA/OpenShell/main/install.sh | sh
+curl -LsSf https://raw.githubusercontent.com/NVIDIA/OpenShell/main/install.sh | OPENSHELL_VERSION=v0.0.113 sh
 ```
 
 The installer:

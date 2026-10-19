@@ -1,6 +1,7 @@
 package agentrun
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,7 +18,7 @@ func TestListAppRepos(t *testing.T) {
 	}()
 
 	_, keyPEM := testRSAKey(t)
-	execCmdOutputFn = func(name string, args ...string) (string, error) {
+	execCmdOutputFn = func(_ context.Context, name string, args ...string) (string, error) {
 		if name == "security" {
 			return string(keyPEM), nil
 		}
@@ -100,7 +101,7 @@ func TestIsAppRepoAccessible(t *testing.T) {
 	}()
 
 	_, keyPEM := testRSAKey(t)
-	execCmdOutputFn = func(name string, args ...string) (string, error) {
+	execCmdOutputFn = func(_ context.Context, name string, args ...string) (string, error) {
 		if name == "security" {
 			return string(keyPEM), nil
 		}
@@ -208,13 +209,13 @@ func TestResolveGitHubCredential(t *testing.T) {
 
 		// Mock keychain to report App PEM exists
 		_, keyPEM := testRSAKey(t)
-		execCmdSilentFn = func(name string, args ...string) error {
+		execCmdSilentFn = func(_ context.Context, name string, args ...string) error {
 			if name == "security" {
 				return nil // keychain entry exists
 			}
 			return nil
 		}
-		execCmdOutputFn = func(name string, args ...string) (string, error) {
+		execCmdOutputFn = func(_ context.Context, name string, args ...string) (string, error) {
 			if name == "security" {
 				return string(keyPEM), nil
 			}
@@ -253,7 +254,7 @@ func TestResolveGitHubCredential(t *testing.T) {
 		t.Setenv("GITHUB_TOKEN", "")
 
 		// Mock keychain to report no App PEM
-		execCmdSilentFn = func(name string, args ...string) error {
+		execCmdSilentFn = func(_ context.Context, name string, args ...string) error {
 			if name == "security" {
 				return fmt.Errorf("not found")
 			}
@@ -275,7 +276,7 @@ func TestResolveGitHubCredential(t *testing.T) {
 		defer func() { execCmdSilentFn = origSilent }()
 
 		// Both PAT and App available
-		execCmdSilentFn = func(name string, args ...string) error {
+		execCmdSilentFn = func(_ context.Context, name string, args ...string) error {
 			return nil // keychain exists
 		}
 

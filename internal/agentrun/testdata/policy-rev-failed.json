@@ -1,0 +1,10 @@
+{
+  "scope": "sandbox",
+  "sandbox": "a-claude-123",
+  "version": 3,
+  "hash": "abc123",
+  "status": "failed",
+  "active_version": 3,
+  "created_at_ms": 1760000000000,
+  "load_error": "bad rule"
+}

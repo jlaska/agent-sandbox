@@ -9,12 +9,22 @@ GO := go
 GOFLAGS := -v
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
+# Pinned to match .github/workflows/test.yml
+ACTIONLINT_VERSION := v1.7.12
+
 # Directories
 SRC_DIR := ./cmd/agent-run
 PKG_DIR := ./internal/agentrun
 BUILD_DIR := ./bin
 
-.PHONY: all build clean test lint install setup help
+.PHONY: all build clean test lint install setup help images image-claude image-pi image-opencode smoke lint-images lint-ci
+
+# Extra flags for tests/images/smoke.sh (e.g. SMOKE_FLAGS=--skip-network). The strict
+# policy-path contract (every policy binary is in binaries.txt) always runs by default.
+SMOKE_FLAGS ?=
+
+# Harnesses covered by `make smoke` (CI passes one, e.g. `make smoke HARNESSES=pi`).
+HARNESSES ?= claude pi opencode
 
 ## all: Build the binary
 all: build
@@ -30,15 +40,15 @@ $(BUILD_DIR)/$(BINARY_NAME): $(GO_SOURCES) go.mod
 	$(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME) $(SRC_DIR)
 	@echo "Binary built: $(BUILD_DIR)/$(BINARY_NAME)"
 
-## test: Run all tests
+## test: Run all tests (every package, incl. the embed/contract tests in openshell/)
 test:
 	@echo "Running tests..."
-	$(GO) test $(GOFLAGS) -cover $(PKG_DIR)
+	$(GO) test $(GOFLAGS) -cover ./...
 
 ## lint: Run linter
 lint:
 	@echo "Running linter..."
-	@which golangci-lint > /dev/null 2>&1 || { echo "golangci-lint not found. Install: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest"; exit 1; }
+	@which golangci-lint > /dev/null 2>&1 || { echo "golangci-lint not found. Install: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2"; exit 1; }
 	golangci-lint run $(PKG_DIR)
 
 ## vet: Run go vet
@@ -77,6 +87,39 @@ setup:
 	pre-commit run --all-files || true
 	@echo ""
 	@echo "Setup complete. Pre-commit hooks are installed."
+
+## images: Build all harness images locally with podman (localhost/agent-<h>:local)
+images:
+	./openshell/images/build.sh --local all
+
+## image-claude: Build the claude harness image locally
+image-claude:
+	./openshell/images/build.sh --local claude
+
+## image-pi: Build the pi harness image locally
+image-pi:
+	./openshell/images/build.sh --local pi
+
+## image-opencode: Build the opencode harness image locally
+image-opencode:
+	./openshell/images/build.sh --local opencode
+
+## smoke: Smoke-test all locally built harness images (run make images first)
+smoke:
+	@for h in $(HARNESSES); do \
+		./tests/images/smoke.sh localhost/agent-$$h:local $$h $(SMOKE_FLAGS) || exit 1; \
+	done
+
+## lint-images: Lint image Dockerfiles (hadolint) and image shell scripts (shellcheck)
+lint-images:
+	@which hadolint > /dev/null 2>&1 || { echo "hadolint not found. Install: brew install hadolint"; exit 1; }
+	@which shellcheck > /dev/null 2>&1 || { echo "shellcheck not found. Install: brew install shellcheck"; exit 1; }
+	hadolint openshell/images/*/Dockerfile
+	shellcheck openshell/images/build.sh openshell/images/version.sh tests/images/smoke.sh openshell/images/refresh-checksums.sh
+
+## lint-ci: Lint GitHub Actions workflows (actionlint, run via go)
+lint-ci:
+	$(GO) run github.com/rhysd/actionlint/cmd/actionlint@$(ACTIONLINT_VERSION)
 
 ## help: Show this help message
 help:
