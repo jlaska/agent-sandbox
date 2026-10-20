@@ -1,6 +1,7 @@
 package agentrun
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -11,6 +12,8 @@ import (
 	"testing"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/jlaska/agent-sandbox/openshell"
 )
 
 func TestParseRepo(t *testing.T) {
@@ -63,16 +66,8 @@ func TestParseRepo(t *testing.T) {
 	}
 }
 
-// setupPolicyTemplate creates a temp directory with the sandbox-policy.yaml template.
-func setupPolicyTemplate(t *testing.T) string {
-	t.Helper()
-	tmpDir := t.TempDir()
-	policyDir := filepath.Join(tmpDir, "openshell")
-	if err := os.MkdirAll(policyDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	template := `network_policies:
+// testPolicyTemplate is a minimal sandbox-policy.yaml template.
+const testPolicyTemplate = `network_policies:
   github_git:
     rules:
       - path: "/{{.Owner}}/{{.Repo}}.git/info/refs"
@@ -87,16 +82,15 @@ func setupPolicyTemplate(t *testing.T) string {
     deny_rules:
       - fields: [mergePullRequest, enablePullRequestAutoMerge]
 `
-	if err := os.WriteFile(filepath.Join(policyDir, "sandbox-policy.yaml"), []byte(template), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	return tmpDir
+
+// generateTestPolicy renders testPolicyTemplate for repo.
+func generateTestPolicy(repo string) (string, error) {
+	return generatePolicyFrom(repo, []byte(testPolicyTemplate), nil)
 }
 
 func TestGeneratePolicy_SandboxTest(t *testing.T) {
-	repoRoot := setupPolicyTemplate(t)
 
-	result, err := GeneratePolicy("jlaska/agent-sandbox", repoRoot)
+	result, err := generateTestPolicy("jlaska/agent-sandbox")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -120,9 +114,8 @@ func TestGeneratePolicy_SandboxTest(t *testing.T) {
 }
 
 func TestGeneratePolicy_Homelab(t *testing.T) {
-	repoRoot := setupPolicyTemplate(t)
 
-	result, err := GeneratePolicy("jlaska/homelab", repoRoot)
+	result, err := generateTestPolicy("jlaska/homelab")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -143,8 +136,7 @@ func TestGeneratePolicy_Homelab(t *testing.T) {
 }
 
 func TestGeneratePolicy_ContainsExpectedRules(t *testing.T) {
-	repoRoot := setupPolicyTemplate(t)
-	result, err := GeneratePolicy("jlaska/agent-sandbox", repoRoot)
+	result, err := generateTestPolicy("jlaska/agent-sandbox")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -186,7 +178,6 @@ func TestGeneratePolicy_ContainsExpectedRules(t *testing.T) {
 }
 
 func TestGeneratePolicy_MalformedRepo(t *testing.T) {
-	repoRoot := setupPolicyTemplate(t)
 
 	malformed := []string{
 		"",
@@ -199,7 +190,7 @@ func TestGeneratePolicy_MalformedRepo(t *testing.T) {
 
 	for _, repo := range malformed {
 		t.Run(repo, func(t *testing.T) {
-			_, err := GeneratePolicy(repo, repoRoot)
+			_, err := generateTestPolicy(repo)
 			if err == nil {
 				t.Errorf("GeneratePolicy(%q) should fail for malformed repo", repo)
 			}
@@ -208,8 +199,7 @@ func TestGeneratePolicy_MalformedRepo(t *testing.T) {
 }
 
 func TestGeneratePolicy_NoDuplicateRepos(t *testing.T) {
-	repoRoot := setupPolicyTemplate(t)
-	result, err := GeneratePolicy("jlaska/agent-sandbox", repoRoot)
+	result, err := generateTestPolicy("jlaska/agent-sandbox")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -235,17 +225,42 @@ func TestGeneratePolicy_NoDuplicateRepos(t *testing.T) {
 	}
 }
 
-func TestGeneratePolicy_MissingTemplate(t *testing.T) {
-	emptyDir := t.TempDir()
-	_, err := GeneratePolicy("jlaska/agent-sandbox", emptyDir)
-	if err == nil {
-		t.Error("expected error for missing policy template")
+func TestGeneratePolicy_EmptyTemplate(t *testing.T) {
+	if _, err := generatePolicyFrom("jlaska/agent-sandbox", nil, nil); err == nil {
+		t.Error("expected error for an empty policy template")
+	}
+}
+
+// The embedded template is what agent-run renders, wherever it runs from.
+func TestGeneratePolicy_UsesEmbeddedTemplate(t *testing.T) {
+	disk, err := os.ReadFile(filepath.Join(realRepoRoot, "openshell", "sandbox-policy.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(disk, openshell.SandboxPolicyTemplate) {
+		t.Fatal("embedded sandbox-policy.yaml differs from openshell/sandbox-policy.yaml")
+	}
+	wd, _ := os.Getwd()
+	if err := os.Chdir(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chdir(wd) }()
+	path, err := GeneratePolicy("jlaska/agent-sandbox")
+	if err != nil {
+		t.Fatalf("GeneratePolicy outside a checkout: %v", err)
+	}
+	defer func() { _ = os.Remove(path) }()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), "pypi_registry") || !strings.Contains(string(b), "/jlaska/agent-sandbox.git/") {
+		t.Error("rendered policy is not the embedded template for jlaska/agent-sandbox")
 	}
 }
 
 func TestGeneratePolicy_NoWildcardRepoWrite(t *testing.T) {
-	repoRoot := setupPolicyTemplate(t)
-	result, err := GeneratePolicy("jlaska/agent-sandbox", repoRoot)
+	result, err := generateTestPolicy("jlaska/agent-sandbox")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -292,7 +307,7 @@ type renderedPolicy struct {
 
 func renderRealPolicy(t *testing.T, hosts []string) (string, renderedPolicy) {
 	t.Helper()
-	path, err := GeneratePolicyWithHosts("jlaska/agent-sandbox", realRepoRoot, hosts)
+	path, err := GeneratePolicyWithHosts("jlaska/agent-sandbox", hosts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -380,7 +395,7 @@ func TestRealPolicyExtraMiseHostsRender(t *testing.T) {
 	if n := strings.Count(strings.Join(got, " "), "nodejs.org"); n != 1 {
 		t.Errorf("duplicate extra host not de-duplicated: %v", got)
 	}
-	if _, err := GeneratePolicyWithHosts("jlaska/agent-sandbox", realRepoRoot, []string{"https://evil/x"}); err == nil {
+	if _, err := GeneratePolicyWithHosts("jlaska/agent-sandbox", []string{"https://evil/x"}); err == nil {
 		t.Error("invalid extra host must be rejected")
 	}
 }

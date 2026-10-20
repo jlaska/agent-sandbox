@@ -39,6 +39,10 @@ make build          # builds bin/agent-run
 make install        # installs to GOPATH/bin
 ```
 
+The binary embeds the sandbox policy template, the pinned image refs and the
+provider profiles, so it runs from any directory. A policy file in the working
+directory is never used; change `openshell/sandbox-policy.yaml` and rebuild.
+
 Requires Go 1.21+ and [OpenShell](https://github.com/nvidia/openshell)
 **0.1.4 or newer** with a running gateway (Podman or Docker compute driver).
 Building images locally also requires Podman.
@@ -125,7 +129,7 @@ placeholder, which OpenShell's proxy replaces with the real value on outbound
 requests. A provider accepts only the env vars its profile declares, and the
 placeholder appears under that name:
 
-| Provider | Sandbox env vars | Host source |
+| Provider type | Sandbox env vars | Host source |
 |---|---|---|
 | `github-agent` | `GITHUB_TOKEN`, `GH_TOKEN` | minted App token or PAT |
 | `claude-code` | `ANTHROPIC_API_KEY` | `ANTHROPIC_API_KEY`, else `CLAUDE_CODE_OAUTH_TOKEN`, else `ANTHROPIC_AUTH_TOKEN` |
@@ -138,6 +142,13 @@ An OAuth token is stored as `ANTHROPIC_API_KEY`; the shell that launches
 header, so a Pro/Max OAuth token only works where that header is accepted (for
 example a LiteLLM proxy). `agent-run` imports the provider profiles it needs from copies embedded
 in the binary when the gateway does not have them.
+
+Each run is one session, identified by its sandbox name (`a-<harness>-<8 hex>`,
+for example `a-claude-3f9c01ab`). Its providers are named
+`<session>-<type>` (`a-claude-3f9c01ab-github-agent`) and labelled
+`agent-run.session=<session>`, so several sessions can share a gateway. The
+cleanup deletes only that session's providers. To find what a crashed session
+left behind: `openshell provider list --label-selector agent-run.session=<session>`.
 
 ### GitHub authentication
 

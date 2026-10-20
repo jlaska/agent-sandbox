@@ -319,7 +319,7 @@ func scalarStrings(l []any) []string {
 // Harness.Providers), listing the gateway's profiles once.
 func ensureProfiles(ctx context.Context, harnessProfiles []string) error {
 	installed := installedProfiles(ctx)
-	for _, id := range append([]string{GitHubProviderName}, harnessProfiles...) {
+	for _, id := range append([]string{GitHubProviderType}, harnessProfiles...) {
 		if err := ensureProfile(ctx, id, installed[id]); err != nil {
 			return err
 		}

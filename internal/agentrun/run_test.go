@@ -3,6 +3,7 @@ package agentrun
 import (
 	"context"
 	"errors"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -38,6 +39,24 @@ func TestBuildCreateArgs(t *testing.T) {
 	args = buildCreateArgs("n", "img", "p", nil, nil, `{"docker":{}}`)
 	if i := indexOf(args, "--driver-config-json"); i < 0 || args[i+1] != `{"docker":{}}` {
 		t.Errorf("driver config not passed through: %v", args)
+	}
+}
+
+func TestNewSessionName(t *testing.T) {
+	re := regexp.MustCompile(`^a-claude-[0-9a-f]{8}$`)
+	seen := map[string]bool{}
+	for i := 0; i < 100; i++ {
+		n, err := newSessionName("claude")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !re.MatchString(n) {
+			t.Fatalf("session name %q does not match %s", n, re)
+		}
+		if seen[n] {
+			t.Fatalf("duplicate session name %q", n)
+		}
+		seen[n] = true
 	}
 }
 

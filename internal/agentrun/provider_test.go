@@ -241,15 +241,15 @@ func TestCreateInferenceProviders(t *testing.T) {
 	t.Run("claude creates claude-code provider", func(t *testing.T) {
 		withMockExec(t, func(mock *mockCmd) {
 			t.Setenv("ANTHROPIC_API_KEY", "sk-test")
-			flags, names, err := createInferenceProviders(context.Background(), HarnessClaude, HarnessOptions{})
+			flags, names, err := createInferenceProviders(context.Background(), "s1", HarnessClaude, HarnessOptions{})
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if len(names) != 1 || names[0] != "claude-code" {
-				t.Errorf("names = %v, want [claude-code]", names)
+			if len(names) != 1 || names[0] != "s1-claude-code" {
+				t.Errorf("names = %v, want [s1-claude-code]", names)
 			}
-			if len(flags) != 2 || flags[0] != "--provider" || flags[1] != "claude-code" {
-				t.Errorf("flags = %v, want [--provider claude-code]", flags)
+			if len(flags) != 2 || flags[0] != "--provider" || flags[1] != "s1-claude-code" {
+				t.Errorf("flags = %v, want [--provider s1-claude-code]", flags)
 			}
 		})
 	})
@@ -264,15 +264,15 @@ func TestCreateInferenceProviders(t *testing.T) {
 			}
 
 			t.Setenv("LITELLM_API_KEY", "sk-litellm")
-			flags, names, err := createInferenceProviders(context.Background(), HarnessPi, HarnessOptions{})
+			flags, names, err := createInferenceProviders(context.Background(), "s1", HarnessPi, HarnessOptions{})
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if len(names) != 1 || names[0] != "litellm-inference" {
-				t.Errorf("names = %v, want [litellm-inference]", names)
+			if len(names) != 1 || names[0] != "s1-litellm-inference" {
+				t.Errorf("names = %v, want [s1-litellm-inference]", names)
 			}
-			if len(flags) != 2 || flags[0] != "--provider" || flags[1] != "litellm-inference" {
-				t.Errorf("flags = %v, want [--provider litellm-inference]", flags)
+			if len(flags) != 2 || flags[0] != "--provider" || flags[1] != "s1-litellm-inference" {
+				t.Errorf("flags = %v, want [--provider s1-litellm-inference]", flags)
 			}
 		})
 	})
@@ -280,7 +280,7 @@ func TestCreateInferenceProviders(t *testing.T) {
 	t.Run("pi errors without LITELLM_API_KEY", func(t *testing.T) {
 		withMockExec(t, func(mock *mockCmd) {
 			t.Setenv("LITELLM_API_KEY", "")
-			_, _, err := createInferenceProviders(context.Background(), HarnessPi, HarnessOptions{})
+			_, _, err := createInferenceProviders(context.Background(), "s1", HarnessPi, HarnessOptions{})
 			if err == nil || !strings.Contains(err.Error(), "LITELLM_API_KEY") {
 				t.Errorf("expected LITELLM_API_KEY error, got %v", err)
 			}
@@ -289,7 +289,7 @@ func TestCreateInferenceProviders(t *testing.T) {
 
 	t.Run("unknown harness creates no providers", func(t *testing.T) {
 		withMockExec(t, func(mock *mockCmd) {
-			flags, names, err := createInferenceProviders(context.Background(), "bogus", HarnessOptions{})
+			flags, names, err := createInferenceProviders(context.Background(), "s1", "bogus", HarnessOptions{})
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -297,6 +297,33 @@ func TestCreateInferenceProviders(t *testing.T) {
 				t.Errorf("expected no providers/flags, got %v / %v", names, flags)
 			}
 		})
+	})
+}
+
+// Each provider is named and labelled for its session, so concurrent runs on
+// one gateway never touch each other's providers.
+func TestCreateProviderSessionScoped(t *testing.T) {
+	withMockExec(t, func(m *mockCmd) {
+		name, err := createProvider(context.Background(), "a-claude-0123abcd", "claude-code",
+			[]credentialPair{{"ANTHROPIC_API_KEY", "k"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if name != "a-claude-0123abcd-claude-code" {
+			t.Errorf("name = %q", name)
+		}
+		got := strings.Join(m.envCalls[0], " ")
+		for _, want := range []string{"--name a-claude-0123abcd-claude-code", "--type claude-code",
+			"--label agent-run.session=a-claude-0123abcd"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("create args %q missing %q", got, want)
+			}
+		}
+		for _, c := range append(m.calls, m.envCalls...) {
+			if strings.Contains(strings.Join(c, " "), "provider delete") {
+				t.Errorf("createProvider must not delete providers: %v", c)
+			}
+		}
 	})
 }
 
@@ -397,7 +424,7 @@ func TestProviderCredentialKeysMatchProfiles(t *testing.T) {
 
 	t.Run("github-agent", func(t *testing.T) {
 		withMockExec(t, func(m *mockCmd) {
-			if err := createProvider(context.Background(), GitHubProviderName, "github-agent", []credentialPair{
+			if _, err := createProvider(context.Background(), "s1", GitHubProviderType, []credentialPair{
 				{"GITHUB_TOKEN", "ghs_secret"}, {"GH_TOKEN", "ghs_secret"}}); err != nil {
 				t.Fatal(err)
 			}
@@ -416,7 +443,7 @@ func TestProviderCredentialKeysMatchProfiles(t *testing.T) {
 	t.Run("claude-code", func(t *testing.T) {
 		t.Setenv("ANTHROPIC_API_KEY", "sk-ant-secret")
 		withMockExec(t, func(m *mockCmd) {
-			if _, _, err := createInferenceProviders(context.Background(), HarnessClaude, HarnessOptions{}); err != nil {
+			if _, _, err := createInferenceProviders(context.Background(), "s1", HarnessClaude, HarnessOptions{}); err != nil {
 				t.Fatal(err)
 			}
 			keys, env := providerCreateCall(t, m, "claude-code")
@@ -433,7 +460,7 @@ func TestProviderCredentialKeysMatchProfiles(t *testing.T) {
 		t.Setenv("ANTHROPIC_API_KEY", "")
 		t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "oauth-secret")
 		withMockExec(t, func(m *mockCmd) {
-			if _, _, err := createInferenceProviders(context.Background(), HarnessClaude, HarnessOptions{}); err != nil {
+			if _, _, err := createInferenceProviders(context.Background(), "s1", HarnessClaude, HarnessOptions{}); err != nil {
 				t.Fatal(err)
 			}
 			keys, env := providerCreateCall(t, m, "claude-code")
@@ -446,7 +473,7 @@ func TestProviderCredentialKeysMatchProfiles(t *testing.T) {
 	t.Run("litellm-inference", func(t *testing.T) {
 		t.Setenv("LITELLM_API_KEY", "sk-l-secret")
 		withMockExec(t, func(m *mockCmd) {
-			if _, _, err := createInferenceProviders(context.Background(), HarnessPi, HarnessOptions{}); err != nil {
+			if _, _, err := createInferenceProviders(context.Background(), "s1", HarnessPi, HarnessOptions{}); err != nil {
 				t.Fatal(err)
 			}
 			keys, env := providerCreateCall(t, m, "litellm-inference")
@@ -463,7 +490,7 @@ func TestProviderCredentialKeysMatchProfiles(t *testing.T) {
 		withMockExec(t, func(m *mockCmd) {
 			t.Setenv("ANTHROPIC_API_KEY", "sk-a-secret")
 			t.Setenv("LITELLM_API_KEY", "")
-			if _, _, err := createInferenceProviders(context.Background(), HarnessOpencode, HarnessOptions{Backend: inferenceAnthropic}); err != nil {
+			if _, _, err := createInferenceProviders(context.Background(), "s1", HarnessOpencode, HarnessOptions{Backend: inferenceAnthropic}); err != nil {
 				t.Fatal(err)
 			}
 			keys, _ := providerCreateCall(t, m, "anthropic")
@@ -477,7 +504,7 @@ func TestProviderCredentialKeysMatchProfiles(t *testing.T) {
 		t.Setenv("ANTHROPIC_API_KEY", "x")
 		withMockExec(t, func(m *mockCmd) {
 			m.err = errors.New("boom")
-			if _, _, err := createInferenceProviders(context.Background(), HarnessClaude, HarnessOptions{}); err == nil {
+			if _, _, err := createInferenceProviders(context.Background(), "s1", HarnessClaude, HarnessOptions{}); err == nil {
 				t.Error("expected error")
 			}
 		})
@@ -504,15 +531,6 @@ func TestShellQuote(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestFindRepoRoot(t *testing.T) {
-	t.Run("finds openshell directory", func(t *testing.T) {
-		root := findRepoRoot()
-		if root == "" {
-			t.Error("findRepoRoot returned empty")
-		}
-	})
 }
 
 func TestDeleteProvider(t *testing.T) {

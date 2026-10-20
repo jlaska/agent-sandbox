@@ -5,13 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 	"text/template"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/jlaska/agent-sandbox/openshell"
 )
 
 // repoPattern validates owner/repo format: alphanumeric, hyphens, underscores, dots.
@@ -80,25 +81,27 @@ func parseMiseHosts(hosts []string) ([]miseHost, error) {
 	return out, nil
 }
 
-// GeneratePolicy generates a repository-scoped sandbox policy from the template.
-// Returns the path to a temporary file containing the generated policy.
-func GeneratePolicy(repo, repoRoot string) (string, error) {
-	return GeneratePolicyWithHosts(repo, repoRoot, nil)
+// GeneratePolicy generates a repository-scoped sandbox policy from the
+// embedded template (openshell/sandbox-policy.yaml, built into the binary so a
+// policy file in the working directory can never replace it). Returns the path
+// to a temporary file containing the generated policy.
+func GeneratePolicy(repo string) (string, error) {
+	return GeneratePolicyWithHosts(repo, nil)
 }
 
 // GeneratePolicyWithHosts is GeneratePolicy plus extra hosts (host[:port]) that
 // the temporary mise_bootstrap rule may reach.
-func GeneratePolicyWithHosts(repo, repoRoot string, miseHosts []string) (string, error) {
+func GeneratePolicyWithHosts(repo string, miseHosts []string) (string, error) {
+	return generatePolicyFrom(repo, openshell.SandboxPolicyTemplate, miseHosts)
+}
+
+// generatePolicyFrom renders tmpl for repo and writes it to a temp file.
+func generatePolicyFrom(repo string, tmpl []byte, miseHosts []string) (string, error) {
 	owner, name, err := ParseRepo(repo)
 	if err != nil {
 		return "", fmt.Errorf("invalid repository: %w", err)
 	}
-
-	templatePath := filepath.Join(repoRoot, "openshell", "sandbox-policy.yaml")
-	content, err := os.ReadFile(templatePath)
-	if err != nil {
-		return "", fmt.Errorf("failed to read policy template: %w", err)
-	}
+	content := tmpl
 
 	extra, err := parseMiseHosts(miseHosts)
 	if err != nil {
