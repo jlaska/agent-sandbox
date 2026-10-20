@@ -8,6 +8,11 @@ import (
 	"strings"
 )
 
+// Version is the agent-run version, stamped at build time with
+// -ldflags "-X github.com/jlaska/agent-sandbox/internal/agentrun.Version=<v>"
+// (the release tag, or `git describe` for make build).
+var Version = "dev"
+
 // Supported values for --inference and --driver.
 var (
 	inferenceBackends = []string{"litellm", "anthropic"}
@@ -27,6 +32,7 @@ type Config struct {
 	Diag           bool
 	ListRepos      bool
 	Help           bool
+	Version        bool
 	MintToken      bool
 	RevokeToken    string
 	GeneratePolicy bool
@@ -112,6 +118,7 @@ func ParseArgs(args []string) (*Config, error) {
 	fs.BoolVar(&cfg.Diag, "diag", false, "print diagnostic information")
 	fs.BoolVar(&cfg.ListRepos, "list-repos", false, "list approved repositories")
 	fs.BoolVar(&cfg.Help, "help", false, "print usage")
+	fs.BoolVar(&cfg.Version, "version", false, "print the agent-run version")
 	fs.BoolVar(&cfg.MintToken, "mint-token", false, "mint a repo-scoped token and print it")
 	fs.StringVar(&cfg.RevokeToken, "revoke-token", "", "revoke a previously minted token")
 	fs.BoolVar(&cfg.GeneratePolicy, "generate-policy", false, "generate a repo-scoped policy file and print its path")
@@ -159,6 +166,11 @@ func ParseArgs(args []string) (*Config, error) {
 
 	if cfg.Help {
 		printUsage()
+		return cfg, nil
+	}
+
+	if cfg.Version {
+		fmt.Println("agent-run " + Version)
 		return cfg, nil
 	}
 
@@ -295,6 +307,7 @@ func printUsage() {
 	fmt.Println("  --mint-token    Mint a repo-scoped token and print it")
 	fmt.Println("  --revoke-token <t>\n                  Revoke a previously minted token")
 	fmt.Println("  --generate-policy\n                  Generate a repo-scoped policy file and print its path")
+	fmt.Println("  --version       Print the agent-run version")
 	fmt.Println("  --help          Show this help")
 }
 

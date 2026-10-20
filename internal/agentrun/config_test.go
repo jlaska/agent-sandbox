@@ -370,6 +370,27 @@ func TestRunOpencodeBackendValidatedEarly(t *testing.T) {
 	}
 }
 
+// --version prints the stamped version and needs no positionals.
+func TestParseArgsVersion(t *testing.T) {
+	orig := Version
+	Version = "v9.9.9"
+	defer func() { Version = orig }()
+	var cfg *Config
+	var err error
+	out := captureStdout(t, func() { cfg, err = ParseArgs([]string{"--version"}) })
+	if err != nil || !cfg.Version || cfg.Help {
+		t.Fatalf("--version: cfg=%+v err=%v", cfg, err)
+	}
+	if out != "agent-run v9.9.9\n" {
+		t.Errorf("output = %q", out)
+	}
+	withMockExec(t, func(m *mockCmd) {
+		if err := Run(cfg); err != nil || len(m.calls) != 0 {
+			t.Errorf("Run(--version) err=%v calls=%v, want no commands", err, m.calls)
+		}
+	})
+}
+
 // --diag runs where a run would be refused: with no positionals at all, and
 // for opencode without an inference key (whose diag line explains why).
 func TestParseArgsDiag(t *testing.T) {
