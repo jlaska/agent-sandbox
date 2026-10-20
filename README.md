@@ -206,6 +206,7 @@ agent-run jlaska/agent-sandbox claude -- --model opus-4-8 --allowedTools Bash,Re
 | `--mint-token <owner/repo>` | Mint a repo-scoped token and print it (for scripts) |
 | `--revoke-token <t>` | Revoke a previously minted token |
 | `--generate-policy <owner/repo>` | Generate a repo-scoped policy file and print its path |
+| `--version` | Print the agent-run version (the release tag; `git describe` for `make build`) |
 | `--help` | Print usage |
 
 ## Harness images

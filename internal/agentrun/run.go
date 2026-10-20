@@ -56,7 +56,7 @@ func RunContext(ctx context.Context, cfg *Config) error {
 }
 
 func run(ctx context.Context, cfg *Config) error {
-	if cfg.Help || cfg.ListRepos {
+	if cfg.Help || cfg.Version || cfg.ListRepos {
 		return nil
 	}
 
@@ -538,6 +538,7 @@ func waitForSandbox(ctx context.Context, name string) error {
 // printDiagnostics prints diagnostic information.
 func printDiagnostics(ctx context.Context, cfg *Config) error {
 	fmt.Println("=== agent-run diagnostics ===")
+	fmt.Printf("  agent-run version:  %s\n", Version)
 
 	// OpenShell version + minimum-version gate
 	fmt.Print("  OpenShell version:  ")

@@ -2,12 +2,13 @@
 # Builds the agent-run binary from Go source
 
 BINARY_NAME := agent-run
-VERSION := 1.0.0
+# Release builds stamp the tag (release.yml); local builds use git describe.
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
 # Go parameters
 GO := go
 GOFLAGS := -v
-LDFLAGS := -s -w -X main.version=$(VERSION)
+LDFLAGS := -s -w -X github.com/jlaska/agent-sandbox/internal/agentrun.Version=$(VERSION)
 
 # Pinned to match .github/workflows/test.yml
 ACTIONLINT_VERSION := v1.7.12
