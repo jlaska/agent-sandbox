@@ -127,69 +127,51 @@ func resolveCredential(key string, explicitEnv []string) string {
 
 // createInferenceProviders creates the OpenShell providers needed for the
 // harness to reach its inference endpoint, with credentials injected securely.
+// Provider names are scoped to session (see sessionProviderName).
 // For opencode, o.Backend selects the provider (see resolveHarnessOptions).
-func createInferenceProviders(ctx context.Context, harness string, o HarnessOptions) (providerFlags []string, providerNames []string, err error) {
-	var flags []string
-	var names []string
+func createInferenceProviders(ctx context.Context, session, harness string, o HarnessOptions) (providerFlags []string, providerNames []string, err error) {
+	var providerType string
+	var creds []credentialPair
 
 	switch harness {
 	case HarnessClaude:
-		name := "claude-code"
-		apiKey, _ := claudeCredential(o.ExplicitEnv)
-		_ = execCmdSilent(ctx, "openshell", "provider", "delete", name)
 		// The claude-code profile declares ANTHROPIC_API_KEY (and CLAUDE_API_KEY);
 		// 0.1.4 rejects any other stored key.
-		if err := createProvider(ctx, name, "claude-code", []credentialPair{{"ANTHROPIC_API_KEY", apiKey}}); err != nil {
-			return nil, nil, fmt.Errorf("failed to create claude-code provider: %w", err)
-		}
-		flags = append(flags, "--provider", name)
-		names = append(names, name)
+		apiKey, _ := claudeCredential(o.ExplicitEnv)
+		providerType, creds = "claude-code", []credentialPair{{"ANTHROPIC_API_KEY", apiKey}}
 
 	case HarnessPi:
 		apiKey := resolveCredential("LITELLM_API_KEY", o.ExplicitEnv)
 		if apiKey == "" {
 			return nil, nil, fmt.Errorf("LITELLM_API_KEY is required for Pi harness, set it in your environment or pass --env LITELLM_API_KEY=<key>")
 		}
-		if err := createLiteLLMProvider(ctx, apiKey); err != nil {
-			return nil, nil, err
-		}
-		flags = append(flags, "--provider", "litellm-inference")
-		names = append(names, "litellm-inference")
+		providerType, creds = litellmProvider(apiKey)
 
 	case HarnessOpencode:
 		if o.Backend == inferenceLiteLLM {
-			if err := createLiteLLMProvider(ctx, resolveCredential("LITELLM_API_KEY", o.ExplicitEnv)); err != nil {
-				return nil, nil, err
-			}
-			flags = append(flags, "--provider", "litellm-inference")
-			names = append(names, "litellm-inference")
+			providerType, creds = litellmProvider(resolveCredential("LITELLM_API_KEY", o.ExplicitEnv))
 			break
 		}
-		name := "anthropic"
-		_ = execCmdSilent(ctx, "openshell", "provider", "delete", name)
-		if err := createProvider(ctx, name, "anthropic",
-			[]credentialPair{{"ANTHROPIC_API_KEY", resolveCredential("ANTHROPIC_API_KEY", o.ExplicitEnv)}}); err != nil {
-			return nil, nil, fmt.Errorf("failed to create anthropic provider: %w", err)
-		}
-		flags = append(flags, "--provider", name)
-		names = append(names, name)
+		providerType, creds = "anthropic", []credentialPair{{"ANTHROPIC_API_KEY", resolveCredential("ANTHROPIC_API_KEY", o.ExplicitEnv)}}
+
+	default:
+		return nil, nil, nil
 	}
 
-	return flags, names, nil
+	name, err := createProvider(ctx, session, providerType, creds)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create %s provider: %w", providerType, err)
+	}
+	return []string{"--provider", name}, []string{name}, nil
 }
 
-// createLiteLLMProvider (re)creates the litellm-inference provider. Only
+// litellmProvider describes the litellm-inference provider. Only
 // LITELLM_API_KEY is stored: the profile declares it as required, and the
 // proxy resolves its placeholder wherever the client puts it (x-api-key for
 // Claude Code, Authorization: Bearer for Pi/opencode), so the optional
 // LITELLM_API_KEY_BEARER / LITELLM_BEARER_TOKEN credentials are not needed.
-func createLiteLLMProvider(ctx context.Context, apiKey string) error {
-	name := "litellm-inference"
-	_ = execCmdSilent(ctx, "openshell", "provider", "delete", name)
-	if err := createProvider(ctx, name, "litellm-inference", []credentialPair{{"LITELLM_API_KEY", apiKey}}); err != nil {
-		return fmt.Errorf("failed to create litellm-inference provider: %w", err)
-	}
-	return nil
+func litellmProvider(apiKey string) (string, []credentialPair) {
+	return "litellm-inference", []credentialPair{{"LITELLM_API_KEY", apiKey}}
 }
 
 // credentialPair is one provider credential: Key is the env-var name the
@@ -197,17 +179,32 @@ func createLiteLLMProvider(ctx context.Context, apiKey string) error {
 // keys, and the sandbox sees a placeholder under that same name).
 type credentialPair struct{ Key, Value string }
 
-// createProvider runs `openshell provider create` with bare-key credentials
-// (`--credential KEY`): OpenShell reads each value from the child's environment
-// of the same name, so secrets never appear in argv (ps, shell history, logs).
-func createProvider(ctx context.Context, name, providerType string, creds []credentialPair) error {
-	args := []string{"provider", "create", "--name", name, "--type", providerType}
+// sessionLabel is the provider label naming the agent-run session (the
+// sandbox name) that owns the provider.
+const sessionLabel = "agent-run.session"
+
+// sessionProviderName is the name of session's provider of providerType.
+// Names are per session so concurrent runs on one gateway never share, or
+// collide on, a provider.
+func sessionProviderName(session, providerType string) string {
+	return session + "-" + providerType
+}
+
+// createProvider runs `openshell provider create` for session's provider of
+// providerType, labelled with the session, and returns its name. Credentials
+// are bare keys (`--credential KEY`): OpenShell reads each value from the
+// child's environment of the same name, so secrets never appear in argv (ps,
+// shell history, logs).
+func createProvider(ctx context.Context, session, providerType string, creds []credentialPair) (string, error) {
+	name := sessionProviderName(session, providerType)
+	args := []string{"provider", "create", "--name", name, "--type", providerType,
+		"--label", sessionLabel + "=" + session}
 	env := make([]string, 0, len(creds))
 	for _, c := range creds {
 		args = append(args, "--credential", c.Key)
 		env = append(env, c.Key+"="+c.Value)
 	}
-	return execCmdEnv(ctx, env, "openshell", args...)
+	return name, execCmdEnv(ctx, env, "openshell", args...)
 }
 
 // claudeCredential picks the secret for the claude-code provider and the host

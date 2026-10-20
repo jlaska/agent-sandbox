@@ -137,8 +137,8 @@ func TestOpencodeBackendResolvedOnce(t *testing.T) {
 		t.Errorf("providers = %v", got)
 	}
 	withMockExec(t, func(mock *mockCmd) {
-		_, names, err := createInferenceProviders(context.Background(), HarnessOpencode, o)
-		if err != nil || len(names) != 1 || names[0] != "anthropic" {
+		_, names, err := createInferenceProviders(context.Background(), "s1", HarnessOpencode, o)
+		if err != nil || len(names) != 1 || names[0] != "s1-anthropic" {
 			t.Errorf("names=%v err=%v", names, err)
 		}
 	})
@@ -162,11 +162,11 @@ func TestCreateInferenceProvidersOpencode(t *testing.T) {
 				t.Setenv(k, v)
 			}
 			withMockExec(t, func(mock *mockCmd) {
-				flags, names, err := createInferenceProviders(context.Background(), HarnessOpencode, opencodeOpts(t, &Config{Inference: tt.inference}))
+				flags, names, err := createInferenceProviders(context.Background(), "s1", HarnessOpencode, opencodeOpts(t, &Config{Inference: tt.inference}))
 				if err != nil {
 					t.Fatal(err)
 				}
-				if len(names) != 1 || names[0] != tt.wantName || len(flags) != 2 || flags[1] != tt.wantName {
+				if want := "s1-" + tt.wantName; len(names) != 1 || names[0] != want || len(flags) != 2 || flags[1] != want {
 					t.Errorf("flags=%v names=%v", flags, names)
 				}
 				keys, env := providerCreateCall(t, mock, tt.wantName)
@@ -191,7 +191,7 @@ func TestCreateInferenceProvidersOpencode(t *testing.T) {
 		o := opencodeOpts(t, &Config{})
 		withMockExec(t, func(mock *mockCmd) {
 			mock.err = os.ErrPermission
-			if _, _, err := createInferenceProviders(context.Background(), HarnessOpencode, o); err == nil {
+			if _, _, err := createInferenceProviders(context.Background(), "s1", HarnessOpencode, o); err == nil {
 				t.Error("expected error")
 			}
 		})

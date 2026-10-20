@@ -2,12 +2,13 @@ package agentrun
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -21,7 +22,9 @@ const (
 	GitUser  = "jlaska-agent[bot]"
 	GitEmail = "jlaska-agent[bot]@users.noreply.github.com"
 
-	GitHubProviderName = "github-agent"
+	// GitHubProviderType is the github-agent provider profile; each session's
+	// provider of this type is named by sessionProviderName.
+	GitHubProviderType = "github-agent"
 
 	SandboxReadyTimeout = 10 * time.Minute
 	SandboxReadyPoll    = 1 * time.Second
@@ -75,8 +78,7 @@ func run(ctx context.Context, cfg *Config) error {
 	}
 
 	if cfg.GeneratePolicy {
-		repoRoot := findRepoRoot()
-		policyPath, err := GeneratePolicyWithHosts(cfg.Repo, repoRoot, cfg.MiseAllowHosts)
+		policyPath, err := GeneratePolicyWithHosts(cfg.Repo, cfg.MiseAllowHosts)
 		if err != nil {
 			return err
 		}
@@ -94,9 +96,6 @@ func run(ctx context.Context, cfg *Config) error {
 	if err != nil {
 		return err
 	}
-
-	// Find repo root for templates/profiles
-	repoRoot := findRepoRoot()
 
 	// State for cleanup
 	var (
@@ -172,8 +171,11 @@ func run(ctx context.Context, cfg *Config) error {
 		fmt.Printf("[agent-run] Model:      %s\n", cfg.Model)
 	}
 
-	// Generate sandbox name
-	sandboxName = fmt.Sprintf("a-%s-%d", cfg.Harness, time.Now().Unix()%1000000)
+	// The sandbox name identifies the session; provider names derive from it.
+	sandboxName, err = newSessionName(cfg.Harness)
+	if err != nil {
+		return err
+	}
 	fmt.Printf("[agent-run] Sandbox:    %s\n", sandboxName)
 
 	// Step 1: Require a supported OpenShell CLI, then verify the gateway
@@ -236,23 +238,24 @@ func run(ctx context.Context, cfg *Config) error {
 
 	// Step 4: Create providers (GitHub + inference)
 	fmt.Println("[agent-run] Creating GitHub provider...")
-	_ = execCmd(ctx, "openshell", "provider", "delete", GitHubProviderName)
 	// The github-agent profile declares GITHUB_TOKEN and GH_TOKEN; 0.1.4 only
 	// accepts those as stored keys, and the sandbox gets a placeholder under
 	// each name (gh reads GH_TOKEN first, then GITHUB_TOKEN).
-	if err := createProvider(ctx, GitHubProviderName, "github-agent", []credentialPair{
+	ghProvider, err := createProvider(ctx, sandboxName, GitHubProviderType, []credentialPair{
 		{"GITHUB_TOKEN", cred.Token},
 		{"GH_TOKEN", cred.Token},
-	}); err != nil {
+	})
+	if err != nil {
 		return fmt.Errorf("failed to create GitHub provider: %w", err)
 	}
-	providersCreated = append(providersCreated, GitHubProviderName)
+	providersCreated = append(providersCreated, ghProvider)
 
-	inferenceFlags, inferenceProviders, err := createInferenceProviders(ctx, cfg.Harness, opts)
+	inferenceFlags, inferenceProviders, err := createInferenceProviders(ctx, sandboxName, cfg.Harness, opts)
 	if err != nil {
 		return fmt.Errorf("failed to create inference providers: %w", err)
 	}
 	providersCreated = append(providersCreated, inferenceProviders...)
+	providerFlags := append([]string{"--provider", ghProvider}, inferenceFlags...)
 
 	// Resolve inference env vars
 	envFlags := resolveInferenceEnv(cfg.Harness, opts)
@@ -266,7 +269,7 @@ func run(ctx context.Context, cfg *Config) error {
 
 	// Step 5: Generate repo-specific policy
 	fmt.Printf("[agent-run] Generating sandbox policy for %s...\n", cfg.Repo)
-	policyTmp, err := GeneratePolicyWithHosts(cfg.Repo, repoRoot, cfg.MiseAllowHosts)
+	policyTmp, err := GeneratePolicyWithHosts(cfg.Repo, cfg.MiseAllowHosts)
 	if err != nil {
 		return fmt.Errorf("failed to generate policy: %w", err)
 	}
@@ -290,7 +293,7 @@ func run(ctx context.Context, cfg *Config) error {
 	// Step 7: Create sandbox from the harness image
 	fmt.Printf("[agent-run] Creating sandbox '%s'...\n", sandboxName)
 	buildArgs := func(driverConfigJSON string) []string {
-		return buildCreateArgs(sandboxName, image, policyTmp, inferenceFlags, envFlags, driverConfigJSON)
+		return buildCreateArgs(sandboxName, image, policyTmp, providerFlags, envFlags, driverConfigJSON)
 	}
 	cleanupSandbox = sandboxName
 	if err := createSandbox(ctx, sandboxName, buildArgs, cache); err != nil {
@@ -408,14 +411,13 @@ func run(ctx context.Context, cfg *Config) error {
 
 // buildCreateArgs assembles the `openshell sandbox create` arguments.
 // driverConfigJSON is passed through only when non-empty.
-func buildCreateArgs(name, image, policyPath string, inferenceFlags, envFlags []string, driverConfigJSON string) []string {
+func buildCreateArgs(name, image, policyPath string, providerFlags, envFlags []string, driverConfigJSON string) []string {
 	args := []string{
 		"sandbox", "create",
 		"--name", name,
 		"--from", image,
-		"--provider", GitHubProviderName,
 	}
-	args = append(args, inferenceFlags...)
+	args = append(args, providerFlags...)
 	args = append(args, "--policy", policyPath)
 	args = append(args, envFlags...)
 	if driverConfigJSON != "" {
@@ -695,12 +697,13 @@ func keychainExists(ctx context.Context, service string) bool {
 	return execCmdSilent(context.Background(), "security", "find-generic-password", "-s", service, "-a", os.Getenv("USER")) == nil
 }
 
-// findRepoRoot finds the repository root directory.
-func findRepoRoot() string {
-	if wd, err := os.Getwd(); err == nil {
-		if _, err := os.Stat(filepath.Join(wd, "openshell")); err == nil {
-			return wd
-		}
+// newSessionName returns a fresh session (sandbox) name, a-<harness>-<8 hex>.
+// The random suffix keeps concurrent and repeated runs apart; a collision
+// makes `sandbox create` fail rather than reuse a sandbox.
+func newSessionName(harness string) (string, error) {
+	b := make([]byte, 4)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("generating session name: %w", err)
 	}
-	return "."
+	return fmt.Sprintf("a-%s-%s", harness, hex.EncodeToString(b)), nil
 }

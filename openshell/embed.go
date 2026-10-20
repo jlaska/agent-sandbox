@@ -1,5 +1,6 @@
 // Package openshell embeds the OpenShell configuration shipped with agent-run:
-// the pinned harness image refs and the provider profiles.
+// the pinned harness image refs, the sandbox policy template and the provider
+// profiles.
 package openshell
 
 import "embed"
@@ -8,6 +9,12 @@ import "embed"
 //
 //go:embed images.yaml
 var ImagesYAML []byte
+
+// SandboxPolicyTemplate is the raw sandbox-policy.yaml template that agent-run
+// renders for each repository.
+//
+//go:embed sandbox-policy.yaml
+var SandboxPolicyTemplate []byte
 
 // ProviderProfiles holds the vendored and local provider profile YAML files.
 //

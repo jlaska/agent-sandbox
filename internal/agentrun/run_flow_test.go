@@ -38,18 +38,15 @@ type execRecord struct {
 }
 
 // runFlow installs flow mocks (policy fixtures, a Ready sandbox list, empty
-// profile list) and runs fn from the repository root, as findRepoRoot needs.
+// profile list) and runs fn from an empty directory: a run needs no checkout,
+// since the policy template and profiles are embedded.
 func runFlow(t *testing.T, onExec func(joined string) (bool, error), fn func(f *flowMock)) {
 	t.Helper()
-	root, err := filepath.Abs("../..")
-	if err != nil {
-		t.Fatal(err)
-	}
 	wd, _ := os.Getwd()
 	// Fixtures are read relative to the package, so load them before chdir.
 	eff := readTestdataAt(t, wd, "policy-get-effective-clean.json")
 	rev := readTestdataAt(t, wd, "policy-rev-loaded.json")
-	if err := os.Chdir(root); err != nil {
+	if err := os.Chdir(t.TempDir()); err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = os.Chdir(wd) }()
@@ -262,11 +259,11 @@ func TestRunSignalRunsCleanupOnce(t *testing.T) {
 				if n := countMatching(calls, "sandbox delete "+f.sbName); n != 1 {
 					t.Errorf("sandbox delete ran %d times, want exactly 1", n)
 				}
-				if n := countMatching(calls, "provider delete claude-code"); n != 2 { // pre-create + cleanup
-					t.Errorf("claude-code provider delete ran %d times, want 2 (pre-create, cleanup)", n)
-				}
-				if n := countMatching(calls, "provider delete github-agent"); n != 2 {
-					t.Errorf("github-agent provider delete ran %d times, want 2", n)
+				// Each session provider is deleted once, by the cleanup.
+				for _, typ := range []string{"claude-code", "github-agent"} {
+					if n := countMatching(calls, "provider delete "+sessionProviderName(f.sbName, typ)); n != 1 {
+						t.Errorf("%s provider delete ran %d times, want 1 (cleanup)", typ, n)
+					}
 				}
 				if got := indexMatching(calls, "--tty") >= 0; got != tt.launchCalled {
 					t.Errorf("launch called = %v, want %v", got, tt.launchCalled)
@@ -455,7 +452,8 @@ func TestRunFailClosedWaitsForSandboxBeforeProviderDeletes(t *testing.T) {
 		}
 		for _, want := range []string{
 			"deletion accepted", "Waiting for sandbox " + f.sbName + " to be removed ... done",
-			"Deleting provider: " + GitHubProviderName + " ... done", "Deleting provider: claude-code ... done",
+			"Deleting provider: " + sessionProviderName(f.sbName, GitHubProviderType) + " ... done",
+			"Deleting provider: " + sessionProviderName(f.sbName, "claude-code") + " ... done",
 		} {
 			if !strings.Contains(out, want) {
 				t.Errorf("output missing %q:\n%s", want, out)
@@ -465,8 +463,8 @@ func TestRunFailClosedWaitsForSandboxBeforeProviderDeletes(t *testing.T) {
 			t.Errorf("unexpected warning:\n%s", out)
 		}
 		calls := callStrings(f.m)
-		if n := countMatching(calls, "provider delete "+GitHubProviderName); n != 2 { // pre-create delete + cleanup
-			t.Errorf("github provider deletes = %d, want 2 (no refused attempt): %v", n, calls)
+		if n := countMatching(calls, "provider delete "+sessionProviderName(f.sbName, GitHubProviderType)); n != 1 {
+			t.Errorf("github provider deletes = %d, want 1 (no refused attempt): %v", n, calls)
 		}
 		narrow := slices.IndexFunc(f.execs, func(r execRecord) bool { return strings.Contains(r.cmd, "--remove-rule") })
 		if narrow < 0 {
@@ -490,8 +488,9 @@ func TestRunCleanupReportsFailedProviderDelete(t *testing.T) {
 				t.Fatalf("Run: %v", err)
 			}
 		})
-		want := "Deleting provider: " + GitHubProviderName + " ... warning: exit status 1: Error: × permission denied " +
-			"(delete it manually: openshell provider delete " + GitHubProviderName + ")"
+		gh := sessionProviderName(f.sbName, GitHubProviderType)
+		want := "Deleting provider: " + gh + " ... warning: exit status 1: Error: × permission denied " +
+			"(delete it manually: openshell provider delete " + gh + ")"
 		if !strings.Contains(out, want) {
 			t.Errorf("output missing %q:\n%s", want, out)
 		}
