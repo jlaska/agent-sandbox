@@ -13,6 +13,16 @@ repos:
       - id: no-commit-to-branch
         args: ['--branch', 'main']
 
+  # Renovate config validation. Mirrors the "renovate-lint" job in .github/workflows/test.yml:
+  # same renovate version (rev == renovate@<rev>) and same invocation. pass_filenames is off so the
+  # validator discovers the config from the repo root, exactly as CI does; `files` only triggers the hook.
+  - repo: https://github.com/renovatebot/pre-commit-hooks
+    rev: 44.151.0
+    hooks:
+      - id: renovate-config-validator
+        args: ['--strict']
+        pass_filenames: false
+
   # Secrets and credential scanning
   - repo: https://github.com/gitleaks/gitleaks
     rev: v8.24.3

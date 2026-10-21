@@ -1,5 +1,5 @@
 // Renovate configuration for agent-sandbox (plan: issue #41, WP6).
-// Validate with: npx --yes --package renovate@44.151.0 renovate-config-validator --strict  (from the repo root, no file argument; same as CI)
+// Validate with: pre-commit run renovate-config-validator --all-files  (same renovate version and invocation as CI)
 {
   $schema: "https://docs.renovatebot.com/renovate-schema.json",
 
@@ -10,8 +10,12 @@
     ":semanticCommitsDisabled",
   ],
   dependencyDashboard: true,
-  labels: ["dependencies"],
-  // Never automerge; every bump is reviewed by a human.
+  timezone: "America/New_York",
+  labels: ["renovate"],
+  vulnerabilityAlerts: {
+    labels: ["security"],
+  },
+  // Default: no automerge. Patch updates are the exception (see packageRules).
   automerge: false,
 
   // Managers: dockerfile (FROM digest pin), github-actions and gomod are on by default via
@@ -20,12 +24,28 @@
   dockerfile: {
     managerFilePatterns: ["/^openshell/images/.+/Dockerfile$/"],
   },
+  // pre-commit is off by default in Renovate; enable it so hook `rev:` pins in .pre-commit-config.yaml get updates.
+  "pre-commit": {
+    enabled: true,
+  },
 
   // Harness Dockerfiles use `ARG BASE_IMAGE=localhost/agent-base:local` + `FROM ${BASE_IMAGE}`: a locally
   // built (podman) image that is not in any registry. Never look it up (nor any localhost/* image).
   ignoreDeps: ["base", "localhost/agent-base"],
 
   customManagers: [
+    {
+      // CI's renovate-config-validator pin in .github/workflows/test.yml:
+      //   run: npx --yes --package renovate@44.151.0 renovate-config-validator --strict
+      // Kept in lockstep with the pre-commit hook rev via the "renovate-config-validator" group below.
+      customType: "regex",
+      managerFilePatterns: ["/^\\.github/workflows/test\\.yml$/"],
+      matchStrings: [
+        "npx\\s+--yes\\s+--package\\s+renovate@(?<currentValue>\\d+\\.\\d+\\.\\d+)\\s+renovate-config-validator",
+      ],
+      datasourceTemplate: "npm",
+      depNameTemplate: "renovate",
+    },
     {
       // Dockerfile pins WITHOUT extractVersion (default case):
       //   # renovate: datasource=github-releases depName=jdx/mise versioning=loose
@@ -65,6 +85,26 @@
   ],
 
   packageRules: [
+    // Patch updates automerge overnight once the PR's CI passes. A group PR automerges only if every update in
+    // it is a patch. platformAutomerge is off because GitHub-native auto-merge is armed at PR creation and
+    // would ignore automergeSchedule; Renovate merges itself inside the window (branch protection still applies).
+    {
+      description: "automerge patch updates",
+      matchUpdateTypes: ["patch"],
+      automerge: true,
+      automergeType: "pr",
+      platformAutomerge: false,
+      automergeSchedule: ["after 1:00am and before 7am"],
+    },
+    // Renovate config validator: the pre-commit hook rev (renovatebot/pre-commit-hooks tags track renovate
+    // releases 1:1) and CI's npx pin must move together. The hooks repo tags a few hours after the npm
+    // release, so the release-age delay lets both sides catch up before the PR opens.
+    {
+      description: "renovate-config-validator (pre-commit hook + CI)",
+      matchDepNames: ["renovate", "renovatebot/pre-commit-hooks"],
+      groupName: "renovate-config-validator",
+      minimumReleaseAge: "1 day",
+    },
     // Belt and braces: anything under localhost/ is a local build, never a registry dependency.
     {
       description: "ignore locally built images",
