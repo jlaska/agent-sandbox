@@ -1,0 +1,6 @@
+# actionlint (<= v1.7.12) doesn't know GitHub's ubuntu-26.04 runner labels yet
+# (rhysd/actionlint#682). Remove once a release includes them.
+self-hosted-runner:
+  labels:
+    - ubuntu-26.04
+    - ubuntu-26.04-arm
