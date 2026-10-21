@@ -30,12 +30,11 @@ HARNESSES ?= claude pi opencode
 ## all: Build the binary
 all: build
 
-GO_SOURCES := $(shell find $(SRC_DIR) $(PKG_DIR) -name '*.go' 2>/dev/null)
-
 ## build: Build the agent-run binary
-build: $(BUILD_DIR)/$(BINARY_NAME)
-
-$(BUILD_DIR)/$(BINARY_NAME): $(GO_SOURCES) go.mod
+# Always invoke go build: its cache tracks every input (all imported packages,
+# embedded files, go.sum, and the VERSION in -ldflags), so a make-level
+# prerequisite list would only go stale.
+build:
 	@echo "Building $(BINARY_NAME)..."
 	@mkdir -p $(BUILD_DIR)
 	$(GO) build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME) $(SRC_DIR)
