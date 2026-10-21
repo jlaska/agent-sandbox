@@ -9,7 +9,7 @@ FROM ${BASE_IMAGE}
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 # renovate: datasource=npm depName=@anthropic-ai/claude-code
-ARG CLAUDE_VERSION=2.1.302
+ARG CLAUDE_VERSION=2.1.303
 ARG REVISION=unknown
 ARG CREATED=unknown
 
