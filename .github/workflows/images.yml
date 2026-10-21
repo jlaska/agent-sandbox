@@ -1,10 +1,9 @@
 name: Images
 
 # Builds, smoke-tests and (on main only) publishes the per-harness sandbox images.
-# Podman only (decision D16): no docker/buildx/bake actions. Both ubuntu-24.04 and
-# ubuntu-24.04-arm runner images ship Podman preinstalled:
-#   https://github.com/actions/runner-images/blob/main/images/ubuntu/Ubuntu2404-Readme.md
-#   https://github.com/actions/partner-runner-images/blob/main/images/arm-ubuntu-24-image.md
+# Podman only (decision D16): no docker/buildx/bake actions. The GitHub-hosted ubuntu-* runner
+# images (amd64 and -arm) ship Podman preinstalled; see each image's readme, linked from:
+#   https://github.com/actions/runner-images#available-images
 
 on:
   pull_request:
