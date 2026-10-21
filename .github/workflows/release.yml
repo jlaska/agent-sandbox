@@ -13,7 +13,7 @@ concurrency:
 
 jobs:
   release:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     strategy:
       matrix:
         include:
@@ -48,7 +48,7 @@ jobs:
 
   publish:
     needs: release
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     # Only this job writes: it creates the GitHub release.
     permissions:
       contents: write
