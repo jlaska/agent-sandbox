@@ -2,7 +2,7 @@
 images:
   claude:
     # renovate: datasource=docker depName=ghcr.io/jlaska/agent-claude versioning=semver
-    ref: ghcr.io/jlaska/agent-claude:2.1.301@sha256:de24d3be1aa49232707f6e3fbc6533b043d6232b2edadc1c869d673c2ac2125b
+    ref: ghcr.io/jlaska/agent-claude:2.1.302@sha256:fa223c0db1e828316b0d4d28ec8943fe51e14e29f2659674758539989e2f2d37
   pi:
     # renovate: datasource=docker depName=ghcr.io/jlaska/agent-pi versioning=semver
     ref: ghcr.io/jlaska/agent-pi:1.3.0@sha256:f9dad0c6cf8a90fc840614365e745ea588ebf469df14c72db02a8f1533581087
