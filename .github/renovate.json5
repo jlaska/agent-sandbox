@@ -111,12 +111,14 @@
     },
     // Renovate config validator: the pre-commit hook rev (renovatebot/pre-commit-hooks tags track renovate
     // releases 1:1) and CI's npx pin must move together. The hooks repo tags a few hours after the npm
-    // release, so the release-age delay lets both sides catch up before the PR opens.
+    // release, so the release-age delay lets both sides catch up before the PR opens. It must also exceed
+    // Aikido safe-chain's minimum package age (48h default): the pre-commit hook npm-installs renovate locally
+    // and safe-chain refuses versions younger than that.
     {
       description: "renovate-config-validator (pre-commit hook + CI)",
       matchDepNames: ["renovate", "renovatebot/pre-commit-hooks"],
       groupName: "renovate-config-validator",
-      minimumReleaseAge: "1 day",
+      minimumReleaseAge: "3 days",
     },
     // Belt and braces: anything under localhost/ is a local build, never a registry dependency.
     {
