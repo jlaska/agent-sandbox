@@ -176,5 +176,17 @@
       allowedVersions: "/^\\d+\\.\\d+\\.\\d+$/",
       addLabels: ["image-digest"],
     },
+    // Every publish from main re-pushes the same version tag with a new digest (rebuilds aren't
+    // reproducible), so each base/workflow change yields a digest PR per harness. These images are built
+    // and smoke-tested by CI from reviewed main, so let digest-only bumps automerge like patches do.
+    {
+      description: "automerge digest updates of published agent images",
+      matchDepNames: ["/^ghcr\\.io/jlaska/agent-/"],
+      matchUpdateTypes: ["digest"],
+      automerge: true,
+      automergeType: "pr",
+      platformAutomerge: false,
+      automergeSchedule: ["after 1:00am and before 7am"],
+    },
   ],
 }
