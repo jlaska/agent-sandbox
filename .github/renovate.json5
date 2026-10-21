@@ -82,6 +82,19 @@
         "#\\s*renovate:\\s*datasource=(?<datasource>\\S+)\\s+depName=(?<depName>\\S+)(?:\\s+versioning=(?<versioning>\\S+))?[ \\t]*\\r?\\n\\s*ref:\\s*\\S+?:(?<currentValue>[^@\\s]+)@(?<currentDigest>sha256:[a-f0-9]{64})",
       ],
     },
+    {
+      // Runner labels inside a job matrix, which the github-actions manager only reads from `runs-on:`:
+      //   matrix: ... {runner: "ubuntu-24.04", arch: "amd64"}, {runner: "ubuntu-24.04-arm", arch: "arm64"}
+      // depName/datasource match what github-actions extracts for `runs-on: ubuntu-24.04`, so matrix and
+      // runs-on bumps share one branch/PR (renovate/ubuntu-<major>.x). "-arm" carries through as a suffix.
+      customType: "regex",
+      managerFilePatterns: ["/^\\.github/workflows/[^/]+\\.ya?ml$/"],
+      matchStrings: [
+        "runner:\\s*\"ubuntu-(?<currentValue>\\d+\\.\\d+(?:-arm)?)\"",
+      ],
+      depNameTemplate: "ubuntu",
+      datasourceTemplate: "github-runners",
+    },
   ],
 
   packageRules: [
