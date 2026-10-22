@@ -64,7 +64,7 @@ RUN set -eux; \
 
 # uv (checksum from the release's .sha256 sidecar)
 # renovate: datasource=github-releases depName=astral-sh/uv
-ARG UV_VERSION=0.13.4
+ARG UV_VERSION=0.13.5
 RUN set -eux; \
     arch="$(dpkg --print-architecture)"; \
     case "$arch" in amd64) uarch=x86_64 ;; arm64) uarch=aarch64 ;; *) echo "unsupported arch $arch" >&2; exit 1 ;; esac; \
