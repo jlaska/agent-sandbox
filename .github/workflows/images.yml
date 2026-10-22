@@ -137,7 +137,7 @@ jobs:
       # smoke.sh parses sandbox-policy.yaml on the host with `uv run --with pyyaml`.
       - uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa # v10.3.1
         with:
-          version: '0.13.4'
+          version: '0.13.5'
           enable-cache: false
 
       - name: Podman version
