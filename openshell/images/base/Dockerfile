@@ -51,7 +51,7 @@ RUN set -eux; \
 
 # mise (single binary; checksum from the release's SHASUMS256.txt). CalVer: use loose versioning.
 # renovate: datasource=github-releases depName=jdx/mise versioning=loose
-ARG MISE_VERSION=2026.10.17
+ARG MISE_VERSION=2026.10.18
 RUN set -eux; \
     arch="$(dpkg --print-architecture)"; \
     case "$arch" in amd64) march=x64 ;; arm64) march=arm64 ;; *) echo "unsupported arch $arch" >&2; exit 1 ;; esac; \
@@ -80,7 +80,7 @@ RUN set -eux; \
 
 # gh (checksum from gh_<ver>_checksums.txt)
 # renovate: datasource=github-releases depName=cli/cli
-ARG GH_VERSION=2.103.0
+ARG GH_VERSION=2.103.2
 RUN set -eux; \
     arch="$(dpkg --print-architecture)"; \
     f="gh_${GH_VERSION}_linux_${arch}.tar.gz"; \
