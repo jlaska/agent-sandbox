@@ -64,6 +64,10 @@ jobs:
       - name: shellcheck
         run: git ls-files -z '*.sh' | xargs -0 shellcheck --severity=warning
 
+      # Offline: the matrix's response classifier and the case table (no OpenShell).
+      - name: Policy matrix self-test
+        run: ./tests/policy-matrix.sh --self-test
+
       # hadolint is not on the runner image: fetch the pinned release and verify its sha256
       # (digest from the GitHub release asset hadolint-linux-x86_64 of v2.15.1).
       - name: Install hadolint

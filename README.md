@@ -369,6 +369,27 @@ make smoke      # smoke-test the local images
 make help       # list all targets
 ```
 
+### Policy matrix
+
+`make policy-matrix` starts one session and checks every network rule from inside
+the sandbox. Each case is one binary, method and URL with an expected decision
+(`tests/policy-matrix/cases.sh`). A result counts as **deny** only when OpenShell
+itself refused it: the sandbox refused `connect()`, or the proxy answered with
+its own denial. Any upstream reply, including a 401 or 404, means the policy
+allowed it. Anything else (for example a host your DNS blocklist answers with
+`0.0.0.0`) is an error, never a deny. Probes use paths that match a rule but name
+nothing real, so an allowed probe changes nothing upstream.
+
+```bash
+make policy-matrix                                   # claude on jlaska/agent-sandbox
+make policy-matrix MATRIX_FLAGS="--expect hardened"  # verdicts for the hardened baseline
+./tests/policy-matrix.sh --list                      # show the cases
+./tests/policy-matrix.sh --sandbox NAME --only node-sentry
+```
+
+Each case records today's decision and the decision expected after baseline
+hardening. Cases where the two differ are marked `[hardened: ...]`.
+
 ## License
 
 See [LICENSE](LICENSE) for details.
