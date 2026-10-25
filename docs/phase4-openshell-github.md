@@ -67,7 +67,7 @@ Allowed:
 - `PATCH /repos/.../pulls/*` (update PR)
 - `POST /repos/.../issues/*/comments` (PR comments)
 - `POST /repos/.../pulls/*/reviews` (PR reviews)
-- `DELETE /repos/.../git/refs/**` (branch cleanup)
+- `DELETE /repos/.../git/refs/heads/agent/**` (cleanup of the agent's own branches)
 - `GET /user`, `/rate_limit`, `/app` (identity, rate limits)
 
 No `PUT` method is allowed — this implicitly blocks the merge REST endpoint.
@@ -191,12 +191,14 @@ maps the `api_token` placeholder to the git credential protocol.
 
 ### Policy vs profile separation
 
-- **Provider profile**: defines endpoint declarations and credential injection
-  rules. The profile's rules determine which requests receive credential headers.
-- **Sandbox policy**: defines L7 network allow/deny rules. The policy controls
-  which requests are permitted through the gateway.
-
-Both must agree for a request to succeed with credentials.
+- **Provider profile**: defines the credentials only. The github-agent profile
+  is endpointless (`endpoints: []`): profile endpoints would add a
+  `_provider_*` rule that unions with the sandbox policy, and a generic profile
+  cannot be limited to one repository.
+- **Sandbox policy**: defines the L7 allow/deny rules, and binds the session's
+  GitHub provider (`credential_binding`) on every github.com / api.github.com
+  endpoint. The binding decides where the token placeholder is resolved; the
+  rules decide which requests are permitted.
 
 ### GraphQL mutation control
 

@@ -27,7 +27,7 @@ network layer — with credentials that self-destruct.
 | Layer | Enforcement |
 |---|---|
 | GitHub App + rulesets | Agent can only push `agent/**` branches, create PRs, comment. Cannot push `main`, merge, or manipulate tags. |
-| L7 network policy | Per-binary enforcement: only `git` can reach github.com, only the harness can reach inference endpoints. Merge APIs blocked. |
+| L7 network policy | Per-binary enforcement: only `git`/`gh` can reach GitHub, and only for the target repo (branch deletes limited to `agent/**`); only the harness can reach inference endpoints. Merge APIs blocked. Verified per rule by `make policy-matrix`. |
 | Token scope | Single-repo scoped, auto-expires (~1h), revoked on exit. |
 | Container isolation | Rootless container, default-deny network, read-only system paths. |
 | Dependency cooldown | Package versions published in the last 3 days are not installed (npm, uv, mise). |

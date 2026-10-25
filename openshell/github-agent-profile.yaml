@@ -1,6 +1,6 @@
 id: github-agent
 display_name: "GitHub Agent (Restricted)"
-description: "Reusable GitHub provider for autonomous agents. Credential injection and endpoint routing only — repository-level authorization is enforced by the per-session sandbox policy and repo-scoped installation token."
+description: "Reusable GitHub provider for autonomous agents. Credentials only; the per-session sandbox policy binds them to its repo-scoped GitHub endpoints."
 category: source_control
 credentials:
   - name: api_token
@@ -12,82 +12,18 @@ credentials:
     auth_style: bearer
     header_name: authorization
     query_param: ""
-endpoints:
-  # REST API
-  - host: api.github.com
-    port: 443
-    protocol: rest
-    enforcement: enforce
-    rules:
-      # Repository operations (scoped by sandbox policy)
-      - allow:
-          method: GET
-          path: /repos/**
-      - allow:
-          method: POST
-          path: /repos/**/pulls
-      - allow:
-          method: PATCH
-          path: /repos/**/pulls/*
-      - allow:
-          method: POST
-          path: /repos/**/issues/*/comments
-      - allow:
-          method: POST
-          path: /repos/**/pulls/*/reviews
-      - allow:
-          method: DELETE
-          path: /repos/**/git/refs/**
+# Endpointless on purpose. Profile endpoints become a `_provider_*` network rule
+# that UNIONS with the sandbox policy, and a generic profile cannot be scoped to
+# one repository, so any endpoints here would reopen every repo the token can
+# reach. The sandbox policy binds this provider on its own per-repo GitHub
+# endpoints instead (credential_binding in openshell/sandbox-policy.yaml).
+# `endpoints: []` is explicit so agent-run's profile reconciliation replaces an
+# older import that still has endpoints.
+endpoints: []
 
-      # User identity
-      - allow:
-          method: GET
-          path: /user
-      - allow:
-          method: GET
-          path: /user/**
-
-      # Rate limit
-      - allow:
-          method: GET
-          path: /rate_limit
-
-      # App identity
-      - allow:
-          method: GET
-          path: /app
-
-  # GraphQL API — read-only queries, restricted mutations
-  - host: api.github.com
-    port: 443
-    protocol: graphql
-    access: read-only
-    enforcement: enforce
-    path: /graphql
-
-  # Git Smart HTTP (repo scoping enforced by sandbox policy)
-  - host: github.com
-    port: 443
-    protocol: rest
-    enforcement: enforce
-    rules:
-      - allow:
-          method: GET
-          path: /**
-      - allow:
-          method: HEAD
-          path: /**
-      - allow:
-          method: OPTIONS
-          path: /**
-      - allow:
-          method: POST
-          path: /**/git-upload-pack
-      - allow:
-          method: POST
-          path: /**/git-receive-pack
-
-# Real paths in the agent-* images; see openshell/images/*/binaries.txt.
+# Real paths in the agent-* images; see openshell/images/*/binaries.txt. Binaries
+# only feed a `_provider_*` rule, which an endpointless profile does not create,
+# so these document intent; the sandbox policy decides which binaries reach GitHub.
 binaries:
   - /usr/local/bin/gh
   - /usr/bin/git
