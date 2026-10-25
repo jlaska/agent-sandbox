@@ -269,7 +269,7 @@ func run(ctx context.Context, cfg *Config) error {
 
 	// Step 5: Generate repo-specific policy
 	fmt.Printf("[agent-run] Generating sandbox policy for %s...\n", cfg.Repo)
-	policyTmp, err := GenerateSessionPolicy(cfg.Repo, ghProvider, cfg.MiseAllowHosts)
+	policyTmp, err := GenerateSessionPolicy(cfg.Repo, sessionProviders(sandboxName, harness.Providers(opts)), cfg.MiseAllowHosts)
 	if err != nil {
 		return fmt.Errorf("failed to generate policy: %w", err)
 	}

@@ -237,7 +237,7 @@ func TestEnsureProfileReconcilesBinaries(t *testing.T) {
 			if len(got) != 1 || !strings.HasPrefix(got[0], "openshell provider profile update anthropic --file ") {
 				t.Fatalf("update calls = %v", got)
 			}
-			for _, want := range []string{"resource_version: 7", "/usr/local/bin/opencode", "api.anthropic.com"} {
+			for _, want := range []string{"resource_version: 7", "/usr/local/bin/opencode", "endpoints: []"} {
 				if !strings.Contains(staged, want) {
 					t.Errorf("staged profile missing %q:\n%s", want, staged)
 				}
@@ -248,10 +248,9 @@ func TestEnsureProfileReconcilesBinaries(t *testing.T) {
 		})
 	})
 
-	t.Run("equal document is a no-op (binaries order-insensitive, server fields ignored)", func(t *testing.T) {
+	t.Run("equal document is a no-op (server fields ignored)", func(t *testing.T) {
 		withMockExec(t, func(m *mockCmd) {
 			m.execOutput = listAndExport(exportOf(t, "anthropic", func(d map[string]any) {
-				d["binaries"] = []any{"/usr/local/bin/opencode", "/usr/bin/curl"}
 				d["created_at"] = "2026-10-16 00:00:00"
 				d["credentials"].([]any)[0].(map[string]any)["query_param"] = ""
 			}), nil)
@@ -271,7 +270,8 @@ func TestEnsureProfileReconcilesBinaries(t *testing.T) {
 			d["credentials"].([]any)[0].(map[string]any)["env_vars"] = []any{"api_key"}
 		},
 		"stale endpoints": func(d map[string]any) {
-			d["endpoints"].([]any)[0].(map[string]any)["host"] = "api.old.example.com"
+			// An import from before the profile went endpointless.
+			d["endpoints"] = []any{map[string]any{"host": "api.anthropic.com", "port": 443}}
 		},
 		"stale auth_style": func(d map[string]any) {
 			d["credentials"].([]any)[0].(map[string]any)["auth_style"] = "bearer"
@@ -425,7 +425,7 @@ func imageBinaries(t *testing.T) map[string]bool {
 }
 
 func TestProfileData(t *testing.T) {
-	t.Run("overrides vendored binaries and keeps the rest", func(t *testing.T) {
+	t.Run("overrides vendored keys and keeps the rest", func(t *testing.T) {
 		data, err := profileData("anthropic", profileFiles["anthropic"])
 		if err != nil {
 			t.Fatal(err)
@@ -440,10 +440,10 @@ func TestProfileData(t *testing.T) {
 		if err := yaml.Unmarshal(data, &p); err != nil {
 			t.Fatal(err)
 		}
-		if p.ID != "anthropic" || len(p.Endpoints) != 1 || p.Endpoints[0].Host != "api.anthropic.com" {
-			t.Errorf("profile content not preserved: %+v", p)
+		if p.ID != "anthropic" || len(p.Endpoints) != 0 {
+			t.Errorf("profile content not preserved or endpoints not cleared: %+v", p)
 		}
-		if want := profileBinaries["anthropic"]; !reflect.DeepEqual(p.Binaries, want) {
+		if want := profileOverrides["anthropic"]["binaries"]; !reflect.DeepEqual(p.Binaries, want) {
 			t.Errorf("binaries = %v, want %v", p.Binaries, want)
 		}
 	})
@@ -536,20 +536,34 @@ func TestProfileDiffEmptyList(t *testing.T) {
 	}
 }
 
-// The github-agent profile must stay endpointless: profile endpoints become a
-// `_provider_*` rule that unions with the sandbox policy and reopens every repo
-// the token can reach. The sandbox policy binds the provider instead.
-func TestGitHubAgentProfileEndpointless(t *testing.T) {
-	data, err := profileData(GitHubProviderType, profileFiles[GitHubProviderType])
-	if err != nil {
-		t.Fatal(err)
+// Scalar lists such as binaries compare as sets: the gateway may reorder them.
+func TestProfileDiffScalarListOrder(t *testing.T) {
+	want := map[string]any{"binaries": []any{"/usr/local/bin/claude", "/usr/local/bin/node"}}
+	if d := profileDiff("", want, map[string]any{"binaries": []any{"/usr/local/bin/node", "/usr/local/bin/claude"}}); len(d) > 0 {
+		t.Errorf("reordered binaries reported as a diff: %v", d)
 	}
-	var p map[string]any
-	if err := yaml.Unmarshal(data, &p); err != nil {
-		t.Fatal(err)
+	if d := profileDiff("", want, map[string]any{"binaries": []any{"/usr/local/bin/claude", "/usr/bin/curl"}}); len(d) == 0 {
+		t.Error("different binaries not reported")
 	}
-	eps, ok := p["endpoints"].([]any)
-	if !ok || len(eps) != 0 {
-		t.Errorf("github-agent endpoints = %#v, want an explicit empty list", p["endpoints"])
+}
+
+// Every provider profile must stay endpointless: profile endpoints become a
+// `_provider_*` rule that unions with the sandbox policy and reopens whatever
+// it narrows (every repo the GitHub token reaches, every inference path, the
+// telemetry hosts). The sandbox policy binds the providers instead.
+func TestProfilesEndpointless(t *testing.T) {
+	for id, path := range profileFiles {
+		data, err := profileData(id, path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var p map[string]any
+		if err := yaml.Unmarshal(data, &p); err != nil {
+			t.Fatal(err)
+		}
+		eps, ok := p["endpoints"].([]any)
+		if !ok || len(eps) != 0 {
+			t.Errorf("%s endpoints = %#v, want an explicit empty list", id, p["endpoints"])
+		}
 	}
 }

@@ -36,7 +36,6 @@ var inferenceConfigVars = map[string][]string{
 		"ANTHROPIC_VERTEX_PROJECT_ID",
 		"CLOUD_ML_REGION",
 		"ANTHROPIC_CUSTOM_HEADERS",
-		"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
 	},
 	HarnessPi: {
 		"LITELLM_BASE_URL",
@@ -45,6 +44,14 @@ var inferenceConfigVars = map[string][]string{
 	HarnessOpencode: {
 		"LITELLM_BASE_URL",
 	},
+}
+
+// forcedEnv is set in every sandbox of a harness, whatever the host or --env
+// says. The sandbox policy has no rule for Claude Code's telemetry and error
+// reporting (statsig.anthropic.com, sentry.io), so turning that traffic off
+// keeps it from showing up as policy denials.
+var forcedEnv = map[string][]credentialPair{
+	HarnessClaude: {{"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1"}},
 }
 
 // resolveInferenceEnv merges auto-forwarded host config env vars with explicit
@@ -65,6 +72,10 @@ func resolveInferenceEnv(harness string, o HarnessOptions) []string {
 		credentialKeys[key] = true
 	}
 	injected := injectedCredential(harness, o)
+	forced := make(map[string]string)
+	for _, f := range forcedEnv[harness] {
+		forced[f.Key] = f.Value
+	}
 
 	var envFlags []string
 
@@ -80,7 +91,13 @@ func resolveInferenceEnv(harness string, o HarnessOptions) []string {
 
 	// Add explicit --env values, but never forward a credential
 	for _, e := range o.ExplicitEnv {
-		k, _, _ := strings.Cut(e, "=")
+		k, v, _ := strings.Cut(e, "=")
+		if want, ok := forced[k]; ok {
+			if v != want {
+				fmt.Printf("[agent-run] NOTE: %s=%s is ignored; %s sandboxes always use %s=%s.\n", k, v, harness, k, want)
+			}
+			continue
+		}
 		if credentialKeys[k] {
 			if k == injected {
 				fmt.Printf("[agent-run] NOTE: %s will be injected via provider credential (not --env).\n", k)
@@ -90,6 +107,10 @@ func resolveInferenceEnv(harness string, o HarnessOptions) []string {
 			continue
 		}
 		envFlags = append(envFlags, "--env", e)
+	}
+
+	for _, f := range forcedEnv[harness] {
+		envFlags = append(envFlags, "--env", f.Key+"="+f.Value)
 	}
 
 	return envFlags

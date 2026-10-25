@@ -20,6 +20,14 @@ landlock:
 
 network_policies:
 
+  # Inference credentials: the inference provider profiles are endpointless too
+  # (see the GitHub note below). Each api.anthropic.com / LiteLLM endpoint binds
+  # the session's inference provider when one serving that host is attached,
+  # and stays unbound otherwise (OpenShell refuses a binding to an unattached
+  # provider). The binding is emitted from a YAML comment, like the mise hosts,
+  # so the raw template still parses:
+  #{{define "bind"}}{{with .}}{{printf "\n        credential_binding:\n          provider: %q" .}}{{end}}{{end}}
+
   # GitHub credentials: the github-agent provider profile is endpointless, so it
   # adds no rule of its own (a `_provider_*` rule would UNION with these and
   # reopen every repo). Instead every github.com / api.github.com endpoint below
@@ -123,6 +131,7 @@ network_policies:
         port: 443
         protocol: rest
         enforcement: enforce
+        #{{template "bind" .LiteLLMProvider}}
         rules:
           - allow:
               method: POST
@@ -133,8 +142,6 @@ network_policies:
     binaries:
       - { path: /usr/local/bin/claude }
       - { path: /usr/local/bin/node }
-      - { path: /usr/bin/python3.12 }
-      - { path: /usr/bin/curl }
 
   npm_registry:
     name: npm-registry
@@ -236,6 +243,7 @@ network_policies:
         port: 443
         protocol: rest
         enforcement: enforce
+        #{{template "bind" .AnthropicProvider}}
         rules:
           - allow:
               method: POST
@@ -265,28 +273,9 @@ network_policies:
       - { path: /usr/local/bin/claude }
       - { path: /usr/local/bin/node }
 
-  claude_telemetry:
-    name: claude-telemetry
-    endpoints:
-      - host: statsig.anthropic.com
-        port: 443
-        protocol: rest
-        enforcement: enforce
-        rules:
-          - allow:
-              method: POST
-              path: "/**"
-      - host: sentry.io
-        port: 443
-        protocol: rest
-        enforcement: enforce
-        rules:
-          - allow:
-              method: POST
-              path: "/**"
-    binaries:
-      - { path: /usr/local/bin/claude }
-      - { path: /usr/local/bin/node }
+  # No claude_telemetry rule: agent-run sets
+  # CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1, and sentry.io accepts events for
+  # any project, so allowing it would be an open upload channel.
 
   # opencode inference. Bound to the real opencode binary (a compiled release
   # binary, not a node script). The LiteLLM host mirrors litellm_inference; the
@@ -298,6 +287,7 @@ network_policies:
         port: 443
         protocol: rest
         enforcement: enforce
+        #{{template "bind" .LiteLLMProvider}}
         rules:
           - allow:
               method: POST
@@ -315,6 +305,7 @@ network_policies:
         port: 443
         protocol: rest
         enforcement: enforce
+        #{{template "bind" .AnthropicProvider}}
         rules:
           - allow:
               method: POST
