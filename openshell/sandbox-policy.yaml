@@ -20,6 +20,12 @@ landlock:
 
 network_policies:
 
+  # GitHub credentials: the github-agent provider profile is endpointless, so it
+  # adds no rule of its own (a `_provider_*` rule would UNION with these and
+  # reopen every repo). Instead every github.com / api.github.com endpoint below
+  # binds the session's provider instance, which tells OpenShell where the token
+  # placeholder may be resolved. OpenShell requires overlapping endpoints on one
+  # host to agree on the binding, so mise_bootstrap's GitHub endpoints carry it too.
   github_git:
     name: github-git
     endpoints:
@@ -27,6 +33,8 @@ network_policies:
         port: 443
         protocol: rest
         enforcement: enforce
+        credential_binding:
+          provider: "{{.GitHubProvider}}"
         rules:
           - allow:
               method: GET
@@ -48,6 +56,8 @@ network_policies:
         port: 443
         protocol: rest
         enforcement: enforce
+        credential_binding:
+          provider: "{{.GitHubProvider}}"
         rules:
           - allow:
               method: GET
@@ -69,13 +79,10 @@ network_policies:
               path: "/repos/{{.Owner}}/{{.Repo}}/pulls/*/reviews"
           - allow:
               method: DELETE
-              path: "/repos/{{.Owner}}/{{.Repo}}/git/refs/**"
+              path: "/repos/{{.Owner}}/{{.Repo}}/git/refs/heads/agent/**"
           - allow:
               method: GET
               path: "/user"
-          - allow:
-              method: GET
-              path: "/user/**"
           - allow:
               method: GET
               path: "/rate_limit"
@@ -95,6 +102,8 @@ network_policies:
         path: "/graphql"
         protocol: graphql
         enforcement: enforce
+        credential_binding:
+          provider: "{{.GitHubProvider}}"
         rules:
           - allow:
               operation_type: query
@@ -328,6 +337,8 @@ network_policies:
         port: 443
         protocol: rest
         enforcement: enforce
+        credential_binding:
+          provider: "{{.GitHubProvider}}"
         rules:
           - allow:
               method: GET
@@ -339,6 +350,8 @@ network_policies:
         port: 443
         protocol: rest
         enforcement: enforce
+        credential_binding:
+          provider: "{{.GitHubProvider}}"
         rules:
           - allow:
               method: GET

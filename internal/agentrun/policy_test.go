@@ -85,7 +85,7 @@ const testPolicyTemplate = `network_policies:
 
 // generateTestPolicy renders testPolicyTemplate for repo.
 func generateTestPolicy(repo string) (string, error) {
-	return generatePolicyFrom(repo, []byte(testPolicyTemplate), nil)
+	return generatePolicyFrom(repo, []byte(testPolicyTemplate), GitHubProviderType, nil)
 }
 
 func TestGeneratePolicy_SandboxTest(t *testing.T) {
@@ -226,7 +226,7 @@ func TestGeneratePolicy_NoDuplicateRepos(t *testing.T) {
 }
 
 func TestGeneratePolicy_EmptyTemplate(t *testing.T) {
-	if _, err := generatePolicyFrom("jlaska/agent-sandbox", nil, nil); err == nil {
+	if _, err := generatePolicyFrom("jlaska/agent-sandbox", nil, GitHubProviderType, nil); err == nil {
 		t.Error("expected error for an empty policy template")
 	}
 }
@@ -397,6 +397,118 @@ func TestRealPolicyExtraMiseHostsRender(t *testing.T) {
 	}
 	if _, err := GeneratePolicyWithHosts("jlaska/agent-sandbox", []string{"https://evil/x"}); err == nil {
 		t.Error("invalid extra host must be rejected")
+	}
+	// The GitHub hosts carry the credential binding; an unbound duplicate would
+	// make OpenShell reject the whole policy.
+	for _, h := range []string{"github.com", "API.github.com:443"} {
+		if _, err := GeneratePolicyWithHosts("jlaska/agent-sandbox", []string{h}); err == nil {
+			t.Errorf("--mise-allow-host %s must be rejected", h)
+		}
+	}
+}
+
+// boundPolicy is the subset of the rendered policy the credential-binding
+// tests look at.
+type boundPolicy struct {
+	NetworkPolicies map[string]struct {
+		Endpoints []struct {
+			Host              string `yaml:"host"`
+			Port              int    `yaml:"port"`
+			Path              string `yaml:"path"`
+			CredentialBinding *struct {
+				Provider string `yaml:"provider"`
+			} `yaml:"credential_binding"`
+			Rules []struct {
+				Allow struct {
+					Method string `yaml:"method"`
+					Path   string `yaml:"path"`
+				} `yaml:"allow"`
+			} `yaml:"rules"`
+		} `yaml:"endpoints"`
+	} `yaml:"network_policies"`
+}
+
+func renderSessionPolicy(t *testing.T, provider string) boundPolicy {
+	t.Helper()
+	path, err := GenerateSessionPolicy("jlaska/agent-sandbox", provider, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Remove(path) }()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var p boundPolicy
+	if err := yaml.Unmarshal(b, &p); err != nil {
+		t.Fatalf("rendered policy is not YAML: %v", err)
+	}
+	return p
+}
+
+// Every GitHub endpoint binds the session's provider (the github-agent profile
+// is endpointless), and nothing else binds any provider.
+func TestSessionPolicyBindsGitHubProvider(t *testing.T) {
+	const provider = "a-claude-5a717a7c-github-agent"
+	p := renderSessionPolicy(t, provider)
+	bound := 0
+	for key, r := range p.NetworkPolicies {
+		for _, e := range r.Endpoints {
+			got := ""
+			if e.CredentialBinding != nil {
+				got = e.CredentialBinding.Provider
+			}
+			want := ""
+			if githubCredentialHosts[e.Host] {
+				want = provider
+				bound++
+			}
+			if got != want {
+				t.Errorf("%s endpoint %s%s: credential_binding.provider = %q, want %q", key, e.Host, e.Path, got, want)
+			}
+		}
+	}
+	if bound < 5 { // github_git, github_api, github_graphql, mise_bootstrap x2
+		t.Errorf("only %d GitHub endpoints bound; want at least 5", bound)
+	}
+}
+
+// The repo-scoped GitHub rules are the only GitHub access, so they must not
+// reach past the repo's agent/** refs or into /user/**.
+func TestSessionPolicyGitHubScope(t *testing.T) {
+	p := renderSessionPolicy(t, GitHubProviderType)
+	api, ok := p.NetworkPolicies["github_api"]
+	if !ok {
+		t.Fatal("github_api rule missing")
+	}
+	deletes := 0
+	for _, e := range api.Endpoints {
+		for _, r := range e.Rules {
+			a := r.Allow
+			if a.Method == "DELETE" {
+				deletes++
+				if a.Path != "/repos/jlaska/agent-sandbox/git/refs/heads/agent/**" {
+					t.Errorf("github_api DELETE %s: only agent/** branches may be deleted", a.Path)
+				}
+			}
+			if strings.HasPrefix(a.Path, "/user/") {
+				t.Errorf("github_api allows %s %s: /user/** enumerates repos, emails and keys", a.Method, a.Path)
+			}
+			if a.Method != "GET" && !strings.HasPrefix(a.Path, "/repos/jlaska/agent-sandbox/") {
+				t.Errorf("github_api allows %s %s outside the target repo", a.Method, a.Path)
+			}
+		}
+	}
+	if deletes != 1 {
+		t.Errorf("github_api has %d DELETE rules, want 1", deletes)
+	}
+}
+
+func TestGenerateSessionPolicyRejectsBadProviderName(t *testing.T) {
+	for _, name := range []string{"", "Upper", `x" y`, "a\nb", "-lead", strings.Repeat("a", 129)} {
+		if _, err := GenerateSessionPolicy("jlaska/agent-sandbox", name, nil); err == nil {
+			t.Errorf("provider name %q must be rejected", name)
+		}
 	}
 }
 

@@ -519,3 +519,37 @@ func exportOf(t *testing.T, id string, mutate func(map[string]any)) string {
 	}
 	return string(b)
 }
+
+func TestProfileDiffEmptyList(t *testing.T) {
+	want := map[string]any{"endpoints": []any{}}
+	for name, tc := range map[string]struct {
+		have map[string]any
+		diff bool
+	}{
+		"absent key matches":     {map[string]any{}, false},
+		"empty list matches":     {map[string]any{"endpoints": []any{}}, false},
+		"stale endpoints differ": {map[string]any{"endpoints": []any{map[string]any{"host": "api.github.com"}}}, true},
+	} {
+		if got := len(profileDiff("", want, tc.have)) > 0; got != tc.diff {
+			t.Errorf("%s: diff = %v, want %v", name, got, tc.diff)
+		}
+	}
+}
+
+// The github-agent profile must stay endpointless: profile endpoints become a
+// `_provider_*` rule that unions with the sandbox policy and reopens every repo
+// the token can reach. The sandbox policy binds the provider instead.
+func TestGitHubAgentProfileEndpointless(t *testing.T) {
+	data, err := profileData(GitHubProviderType, profileFiles[GitHubProviderType])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var p map[string]any
+	if err := yaml.Unmarshal(data, &p); err != nil {
+		t.Fatal(err)
+	}
+	eps, ok := p["endpoints"].([]any)
+	if !ok || len(eps) != 0 {
+		t.Errorf("github-agent endpoints = %#v, want an explicit empty list", p["endpoints"])
+	}
+}

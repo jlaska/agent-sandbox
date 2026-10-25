@@ -56,8 +56,19 @@ type miseHost struct {
 type policyData struct {
 	Owner          string
 	Repo           string
+	GitHubProvider string // provider instance bound to the GitHub endpoints
 	MiseExtraHosts []miseHost
 }
+
+// providerNameRE matches OpenShell provider instance names as agent-run
+// creates them (sessionProviderName), so a name can never break out of the
+// quoted YAML scalar it is rendered into.
+var providerNameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,127}$`)
+
+// githubCredentialHosts carry the GitHub credential_binding in the template.
+// --mise-allow-host may not add them: OpenShell requires every endpoint on a
+// host to agree on the binding, and the template already covers them.
+var githubCredentialHosts = map[string]bool{"github.com": true, "api.github.com": true}
 
 // parseMiseHosts converts validated host[:port] values (default port 443)
 // into template data, dropping duplicates while keeping order.
@@ -69,6 +80,9 @@ func parseMiseHosts(hosts []string) ([]miseHost, error) {
 			return nil, err
 		}
 		host, port, hasPort := strings.Cut(h, ":")
+		if githubCredentialHosts[strings.ToLower(host)] {
+			return nil, fmt.Errorf("--mise-allow-host %s: already allowed during bootstrap (GitHub endpoints are fixed by the policy)", h)
+		}
 		mh := miseHost{Host: strings.ToLower(host), Port: 443}
 		if hasPort {
 			mh.Port, _ = strconv.Atoi(port)
@@ -90,16 +104,29 @@ func GeneratePolicy(repo string) (string, error) {
 }
 
 // GeneratePolicyWithHosts is GeneratePolicy plus extra hosts (host[:port]) that
-// the temporary mise_bootstrap rule may reach.
+// the temporary mise_bootstrap rule may reach. The GitHub endpoints bind a
+// provider named GitHubProviderType ("github-agent"), the name a manually
+// created provider gets (tests/phase4-exit-gate.sh); sessions use
+// GenerateSessionPolicy.
 func GeneratePolicyWithHosts(repo string, miseHosts []string) (string, error) {
-	return generatePolicyFrom(repo, openshell.SandboxPolicyTemplate, miseHosts)
+	return GenerateSessionPolicy(repo, GitHubProviderType, miseHosts)
+}
+
+// GenerateSessionPolicy renders the policy for a session whose GitHub provider
+// instance is githubProvider. OpenShell rejects the policy unless that provider
+// is attached to the sandbox and uses an endpointless profile.
+func GenerateSessionPolicy(repo, githubProvider string, miseHosts []string) (string, error) {
+	return generatePolicyFrom(repo, openshell.SandboxPolicyTemplate, githubProvider, miseHosts)
 }
 
 // generatePolicyFrom renders tmpl for repo and writes it to a temp file.
-func generatePolicyFrom(repo string, tmpl []byte, miseHosts []string) (string, error) {
+func generatePolicyFrom(repo string, tmpl []byte, githubProvider string, miseHosts []string) (string, error) {
 	owner, name, err := ParseRepo(repo)
 	if err != nil {
 		return "", fmt.Errorf("invalid repository: %w", err)
+	}
+	if !providerNameRE.MatchString(githubProvider) {
+		return "", fmt.Errorf("invalid GitHub provider name %q", githubProvider)
 	}
 	content := tmpl
 
@@ -108,7 +135,7 @@ func generatePolicyFrom(repo string, tmpl []byte, miseHosts []string) (string, e
 		return "", err
 	}
 
-	result, err := renderPolicy(string(content), policyData{Owner: owner, Repo: name, MiseExtraHosts: extra})
+	result, err := renderPolicy(string(content), policyData{Owner: owner, Repo: name, GitHubProvider: githubProvider, MiseExtraHosts: extra})
 	if err != nil {
 		return "", err
 	}
@@ -119,7 +146,7 @@ func generatePolicyFrom(repo string, tmpl []byte, miseHosts []string) (string, e
 	if !strings.Contains(result, fullRepo) {
 		return "", fmt.Errorf("generated policy does not contain target repository %q", fullRepo)
 	}
-	if strings.Contains(result, "{{.Owner}}") || strings.Contains(result, "{{.Repo}}") {
+	if strings.Contains(result, "{{.") {
 		return "", fmt.Errorf("generated policy contains unresolved template placeholders")
 	}
 

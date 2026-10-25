@@ -241,8 +241,9 @@ func normalizeJSON(v any) (any, error) {
 
 // profileDiff returns the paths at which want is not contained in have: every
 // map key want sets must match (extra keys in have are ignored), lists must
-// have the same length with each element contained in its counterpart, and
-// lists of scalars compare as sets (binaries order does not matter).
+// have the same length with each element contained in its counterpart (an
+// empty list in want also matches an absent key), and lists of scalars compare
+// as sets (binaries order does not matter).
 func profileDiff(path string, want, have any) []string {
 	at := path
 	if at == "" {
@@ -269,6 +270,11 @@ func profileDiff(path string, want, have any) []string {
 		}
 		return diff
 	case []any:
+		// An empty list matches an absent key: the gateway may omit empty
+		// fields on export (e.g. an endpointless profile's `endpoints: []`).
+		if len(w) == 0 && have == nil {
+			return nil
+		}
 		h, ok := have.([]any)
 		if !ok || len(h) != len(w) {
 			return []string{at}
