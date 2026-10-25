@@ -21,7 +21,7 @@
 pm_case gh-own-repo-read        gh GET    "https://api.github.com/repos/{OWNER}/{REPO}"                                         none           allow allow  "agent reads its own repo"
 pm_case gh-own-pr-create        gh POST   "https://api.github.com/repos/{OWNER}/{REPO}/pulls"                                   json-empty     allow allow  "agent opens PRs"
 pm_case gh-own-comment          gh POST   "https://api.github.com/repos/{OWNER}/{REPO}/issues/0/comments"                       json-empty     allow allow  "agent comments"
-pm_case gh-own-pr-patch         gh PATCH  "https://api.github.com/repos/{OWNER}/{REPO}/pulls/0"                                 json-empty     allow record "PATCH any PR, incl. human ones (open decision)"
+pm_case gh-own-pr-patch         gh PATCH  "https://api.github.com/repos/{OWNER}/{REPO}/pulls/0"                                 json-empty     allow allow  "PATCH any PR, incl. human ones (kept: reversible, attributed to the App)"
 pm_case gh-own-ref-delete-agent gh DELETE "https://api.github.com/repos/{OWNER}/{REPO}/git/refs/heads/agent/policy-matrix-none"  none           allow allow  "agent deletes its own agent/** branches"
 pm_case gh-own-ref-delete-other gh DELETE "https://api.github.com/repos/{OWNER}/{REPO}/git/refs/heads/policy-matrix-none"        none           deny  deny   "ref delete outside agent/** (default branch class)"
 pm_case gh-own-tag-delete       gh DELETE "https://api.github.com/repos/{OWNER}/{REPO}/git/refs/tags/policy-matrix-none"         none           deny  deny   "tag delete"
