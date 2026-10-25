@@ -163,8 +163,35 @@ func TestResolveInferenceEnv(t *testing.T) {
 		}
 
 		flags := resolveInferenceEnv(HarnessClaude, HarnessOptions{})
-		if len(flags) != 0 {
-			t.Errorf("expected no flags when no env vars set, got %v", flags)
+		if want := []string{"--env", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1"}; !slices.Equal(flags, want) {
+			t.Errorf("expected only the forced env when no env vars set, got %v", flags)
+		}
+	})
+
+	// The policy has no telemetry rule, so Claude Code's non-essential traffic
+	// is always off, whatever the host or --env says.
+	t.Run("claude forces non-essential traffic off", func(t *testing.T) {
+		t.Setenv("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "0")
+		var flags []string
+		out := captureStdout(t, func() {
+			flags = resolveInferenceEnv(HarnessClaude, HarnessOptions{ExplicitEnv: []string{"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=0"}})
+		})
+		var got []string
+		for i := 0; i < len(flags)-1; i += 2 {
+			if strings.HasPrefix(flags[i+1], "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=") {
+				got = append(got, flags[i+1])
+			}
+		}
+		if want := []string{"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1"}; !slices.Equal(got, want) {
+			t.Errorf("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC flags = %v, want %v", got, want)
+		}
+		if !strings.Contains(out, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=0 is ignored") {
+			t.Errorf("no note about the ignored --env: %q", out)
+		}
+		for _, h := range []string{HarnessPi, HarnessOpencode} {
+			if f := resolveInferenceEnv(h, HarnessOptions{}); strings.Contains(strings.Join(f, " "), "NONESSENTIAL") {
+				t.Errorf("%s: unexpected %v", h, f)
+			}
 		}
 	})
 

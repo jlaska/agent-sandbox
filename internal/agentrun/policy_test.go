@@ -85,7 +85,7 @@ const testPolicyTemplate = `network_policies:
 
 // generateTestPolicy renders testPolicyTemplate for repo.
 func generateTestPolicy(repo string) (string, error) {
-	return generatePolicyFrom(repo, []byte(testPolicyTemplate), GitHubProviderType, nil)
+	return generatePolicyFrom(repo, []byte(testPolicyTemplate), SessionProviders{GitHubProvider: GitHubProviderType}, nil)
 }
 
 func TestGeneratePolicy_SandboxTest(t *testing.T) {
@@ -226,7 +226,7 @@ func TestGeneratePolicy_NoDuplicateRepos(t *testing.T) {
 }
 
 func TestGeneratePolicy_EmptyTemplate(t *testing.T) {
-	if _, err := generatePolicyFrom("jlaska/agent-sandbox", nil, GitHubProviderType, nil); err == nil {
+	if _, err := generatePolicyFrom("jlaska/agent-sandbox", nil, SessionProviders{GitHubProvider: GitHubProviderType}, nil); err == nil {
 		t.Error("expected error for an empty policy template")
 	}
 }
@@ -425,12 +425,15 @@ type boundPolicy struct {
 				} `yaml:"allow"`
 			} `yaml:"rules"`
 		} `yaml:"endpoints"`
+		Binaries []struct {
+			Path string `yaml:"path"`
+		} `yaml:"binaries"`
 	} `yaml:"network_policies"`
 }
 
-func renderSessionPolicy(t *testing.T, provider string) boundPolicy {
+func renderSessionPolicy(t *testing.T, providers SessionProviders) boundPolicy {
 	t.Helper()
-	path, err := GenerateSessionPolicy("jlaska/agent-sandbox", provider, nil)
+	path, err := GenerateSessionPolicy("jlaska/agent-sandbox", providers, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -446,37 +449,113 @@ func renderSessionPolicy(t *testing.T, provider string) boundPolicy {
 	return p
 }
 
-// Every GitHub endpoint binds the session's provider (the github-agent profile
-// is endpointless), and nothing else binds any provider.
-func TestSessionPolicyBindsGitHubProvider(t *testing.T) {
-	const provider = "a-claude-5a717a7c-github-agent"
-	p := renderSessionPolicy(t, provider)
-	bound := 0
-	for key, r := range p.NetworkPolicies {
-		for _, e := range r.Endpoints {
-			got := ""
-			if e.CredentialBinding != nil {
-				got = e.CredentialBinding.Provider
+// Inference hosts and the providers serving them (SessionProviders).
+const (
+	anthropicHost = "api.anthropic.com"
+	liteLLMHost   = "litellm.internal.keener.us"
+)
+
+// Every GitHub endpoint binds the session's GitHub provider, every inference
+// endpoint binds the session's inference provider for that host if it has
+// one, and nothing else binds any provider. All provider profiles are
+// endpointless, so these bindings are the only place credentials resolve.
+func TestSessionPolicyBindings(t *testing.T) {
+	for _, tc := range []struct {
+		harness string
+		opts    HarnessOptions
+	}{
+		{HarnessClaude, HarnessOptions{}},
+		{HarnessPi, HarnessOptions{}},
+		{HarnessOpencode, HarnessOptions{Backend: inferenceLiteLLM}},
+		{HarnessOpencode, HarnessOptions{Backend: inferenceAnthropic}},
+	} {
+		h, err := LookupHarness(tc.harness)
+		if err != nil {
+			t.Fatal(err)
+		}
+		profiles := h.Providers(tc.opts)
+		sp := sessionProviders("a-claude-5a717a7c", profiles)
+		if sp.AnthropicProvider == "" && sp.LiteLLMProvider == "" {
+			t.Errorf("%s %v: no inference provider bound", tc.harness, profiles)
+		}
+		bound := map[string]int{}
+		for key, r := range renderSessionPolicy(t, sp).NetworkPolicies {
+			for _, e := range r.Endpoints {
+				got := ""
+				if e.CredentialBinding != nil {
+					got = e.CredentialBinding.Provider
+				}
+				want := ""
+				switch {
+				case githubCredentialHosts[e.Host]:
+					want = sp.GitHubProvider
+				case e.Host == anthropicHost:
+					want = sp.AnthropicProvider
+				case e.Host == liteLLMHost:
+					want = sp.LiteLLMProvider
+				}
+				if got != want {
+					t.Errorf("%s %v: %s endpoint %s%s: credential_binding.provider = %q, want %q", tc.harness, profiles, key, e.Host, e.Path, got, want)
+				}
+				if got != "" {
+					bound[got]++
+				}
 			}
-			want := ""
-			if githubCredentialHosts[e.Host] {
-				want = provider
-				bound++
-			}
-			if got != want {
-				t.Errorf("%s endpoint %s%s: credential_binding.provider = %q, want %q", key, e.Host, e.Path, got, want)
+		}
+		if bound[sp.GitHubProvider] < 5 { // github_git, github_api, github_graphql, mise_bootstrap x2
+			t.Errorf("%s: only %d GitHub endpoints bound; want at least 5", tc.harness, bound[sp.GitHubProvider])
+		}
+		for _, inf := range []string{sp.AnthropicProvider, sp.LiteLLMProvider} {
+			if inf != "" && bound[inf] < 2 { // the claude/node rule and the opencode rule
+				t.Errorf("%s: only %d endpoints bind %s; want at least 2", tc.harness, bound[inf], inf)
 			}
 		}
 	}
-	if bound < 5 { // github_git, github_api, github_graphql, mise_bootstrap x2
-		t.Errorf("only %d GitHub endpoints bound; want at least 5", bound)
+}
+
+// Without inference providers (GeneratePolicyWithHosts) only GitHub is bound.
+func TestPolicyWithoutInferenceProviders(t *testing.T) {
+	for key, r := range renderSessionPolicy(t, SessionProviders{GitHubProvider: GitHubProviderType}).NetworkPolicies {
+		for _, e := range r.Endpoints {
+			if e.CredentialBinding != nil && !githubCredentialHosts[e.Host] {
+				t.Errorf("%s endpoint %s binds %q with no inference provider attached", key, e.Host, e.CredentialBinding.Provider)
+			}
+		}
+	}
+}
+
+// Inference hosts are reachable only from the agent binaries, and the policy
+// has no telemetry hosts: sentry.io accepts events for any project, so it is
+// an upload channel, and CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC turns both
+// off in Claude Code.
+func TestSessionPolicyInferenceScope(t *testing.T) {
+	agents := map[string]bool{"/usr/local/bin/claude": true, "/usr/local/bin/node": true, "/usr/local/bin/opencode": true}
+	p := renderSessionPolicy(t, sessionProviders("s1", []string{"claude-code"}))
+	for key, r := range p.NetworkPolicies {
+		inference := false
+		for _, e := range r.Endpoints {
+			switch e.Host {
+			case "sentry.io", "statsig.anthropic.com":
+				t.Errorf("%s allows telemetry host %s", key, e.Host)
+			case anthropicHost, liteLLMHost:
+				inference = true
+			}
+		}
+		if !inference {
+			continue
+		}
+		for _, b := range r.Binaries {
+			if !agents[b.Path] {
+				t.Errorf("%s: inference rule binds %s; only agent binaries may reach inference hosts", key, b.Path)
+			}
+		}
 	}
 }
 
 // The repo-scoped GitHub rules are the only GitHub access, so they must not
 // reach past the repo's agent/** refs or into /user/**.
 func TestSessionPolicyGitHubScope(t *testing.T) {
-	p := renderSessionPolicy(t, GitHubProviderType)
+	p := renderSessionPolicy(t, SessionProviders{GitHubProvider: GitHubProviderType})
 	api, ok := p.NetworkPolicies["github_api"]
 	if !ok {
 		t.Fatal("github_api rule missing")
@@ -506,8 +585,19 @@ func TestSessionPolicyGitHubScope(t *testing.T) {
 
 func TestGenerateSessionPolicyRejectsBadProviderName(t *testing.T) {
 	for _, name := range []string{"", "Upper", `x" y`, "a\nb", "-lead", strings.Repeat("a", 129)} {
-		if _, err := GenerateSessionPolicy("jlaska/agent-sandbox", name, nil); err == nil {
-			t.Errorf("provider name %q must be rejected", name)
+		if _, err := GenerateSessionPolicy("jlaska/agent-sandbox", SessionProviders{GitHubProvider: name}, nil); err == nil {
+			t.Errorf("GitHub provider name %q must be rejected", name)
+		}
+		if name == "" {
+			continue // an empty inference provider means "not attached"
+		}
+		for _, p := range []SessionProviders{
+			{GitHubProvider: GitHubProviderType, AnthropicProvider: name},
+			{GitHubProvider: GitHubProviderType, LiteLLMProvider: name},
+		} {
+			if _, err := GenerateSessionPolicy("jlaska/agent-sandbox", p, nil); err == nil {
+				t.Errorf("inference provider name %q must be rejected", name)
+			}
 		}
 	}
 }

@@ -375,24 +375,32 @@ func allowDriverConfigHint(driver string) string {
 	return fmt.Sprintf("[openshell.drivers.%s] allow_driver_config = true", driver)
 }
 
-// profileBinaries overrides the `binaries` list of vendored upstream profiles.
-// Upstream's examples name generic paths (anthropic.yaml allows only curl) and
-// say to edit `binaries` for your own image; the vendored files stay
-// byte-identical to upstream, so the paths our images provide are set here at
-// import time. Every path must appear in some openshell/images/*/binaries.txt.
-var profileBinaries = map[string][]string{
-	"anthropic":   {"/usr/bin/curl", "/usr/local/bin/opencode"},
-	"claude-code": {"/usr/local/bin/claude"},
+// profileOverrides replaces top-level keys of the vendored upstream profiles at
+// import time; the vendored files stay byte-identical to upstream.
+//
+// endpoints: every inference profile is endpointless, like github-agent.
+// Profile endpoints become a `_provider_*` rule that unions with the sandbox
+// policy, so upstream's read-write endpoints (and claude-code's sentry.io and
+// statsig.anthropic.com) would reopen whatever the policy narrows. The sandbox
+// policy binds each session's inference provider to its hosts instead
+// (SessionProviders).
+//
+// binaries: inert without endpoints, but OpenShell still lists them, so they
+// name the paths our images provide. Every path must appear in some
+// openshell/images/*/binaries.txt.
+var profileOverrides = map[string]map[string]any{
+	"anthropic":   {"binaries": []string{"/usr/local/bin/opencode"}, "endpoints": []any{}},
+	"claude-code": {"binaries": []string{"/usr/local/bin/claude"}, "endpoints": []any{}},
 }
 
-// profileData returns the embedded profile, with its binaries replaced when
-// profileBinaries has an entry for id.
+// profileData returns the embedded profile, with the keys in
+// profileOverrides[id] replaced (or added).
 func profileData(id, path string) ([]byte, error) {
 	data, err := openshell.ProviderProfiles.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read embedded profile %s: %w", id, err)
 	}
-	bins, ok := profileBinaries[id]
+	overrides, ok := profileOverrides[id]
 	if !ok {
 		return data, nil
 	}
@@ -401,19 +409,26 @@ func profileData(id, path string) ([]byte, error) {
 		return nil, fmt.Errorf("failed to parse embedded profile %s: %v", id, err)
 	}
 	root := doc.Content[0]
-	seq := &yaml.Node{Kind: yaml.SequenceNode}
-	for _, b := range bins {
-		seq.Content = append(seq.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: b})
+	keys := make([]string, 0, len(overrides))
+	for k := range overrides {
+		keys = append(keys, k)
 	}
-	replaced := false
-	for i := 0; i+1 < len(root.Content); i += 2 {
-		if root.Content[i].Value == "binaries" {
-			root.Content[i+1] = seq
-			replaced = true
+	slices.Sort(keys)
+	for _, k := range keys {
+		var val yaml.Node
+		if err := val.Encode(overrides[k]); err != nil {
+			return nil, fmt.Errorf("failed to encode %s override for profile %s: %w", k, id, err)
 		}
-	}
-	if !replaced {
-		root.Content = append(root.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: "binaries"}, seq)
+		replaced := false
+		for i := 0; i+1 < len(root.Content); i += 2 {
+			if root.Content[i].Value == k {
+				root.Content[i+1] = &val
+				replaced = true
+			}
+		}
+		if !replaced {
+			root.Content = append(root.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: k}, &val)
+		}
 	}
 	out, err := yaml.Marshal(&doc)
 	if err != nil {

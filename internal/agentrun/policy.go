@@ -54,10 +54,51 @@ type miseHost struct {
 
 // policyData is passed to the sandbox policy template.
 type policyData struct {
-	Owner          string
-	Repo           string
-	GitHubProvider string // provider instance bound to the GitHub endpoints
+	Owner string
+	Repo  string
+	SessionProviders
 	MiseExtraHosts []miseHost
+}
+
+// SessionProviders names the provider instances a session policy binds
+// (credential_binding) to its endpoints. OpenShell resolves a provider's
+// credential placeholders only on endpoints bound to it, and refuses a
+// binding to a provider that is not attached to the sandbox, so an empty
+// inference field leaves those hosts unbound.
+type SessionProviders struct {
+	GitHubProvider    string // github.com, api.github.com (always attached)
+	AnthropicProvider string // api.anthropic.com
+	LiteLLMProvider   string // the LiteLLM proxy
+}
+
+// sessionProviders returns the provider instances session attaches: its
+// GitHub provider plus one per inference profile (Harness.Providers).
+func sessionProviders(session string, inferenceProfiles []string) SessionProviders {
+	p := SessionProviders{GitHubProvider: sessionProviderName(session, GitHubProviderType)}
+	for _, id := range inferenceProfiles {
+		switch id {
+		case "claude-code", "anthropic":
+			p.AnthropicProvider = sessionProviderName(session, id)
+		case "litellm-inference":
+			p.LiteLLMProvider = sessionProviderName(session, id)
+		}
+	}
+	return p
+}
+
+// validate checks every provider name against providerNameRE, so none can
+// break out of the quoted YAML scalar it is rendered into. Only the GitHub
+// provider is required.
+func (p SessionProviders) validate() error {
+	if !providerNameRE.MatchString(p.GitHubProvider) {
+		return fmt.Errorf("invalid GitHub provider name %q", p.GitHubProvider)
+	}
+	for _, n := range []string{p.AnthropicProvider, p.LiteLLMProvider} {
+		if n != "" && !providerNameRE.MatchString(n) {
+			return fmt.Errorf("invalid inference provider name %q", n)
+		}
+	}
+	return nil
 }
 
 // providerNameRE matches OpenShell provider instance names as agent-run
@@ -106,27 +147,27 @@ func GeneratePolicy(repo string) (string, error) {
 // GeneratePolicyWithHosts is GeneratePolicy plus extra hosts (host[:port]) that
 // the temporary mise_bootstrap rule may reach. The GitHub endpoints bind a
 // provider named GitHubProviderType ("github-agent"), the name a manually
-// created provider gets (tests/phase4-exit-gate.sh); sessions use
-// GenerateSessionPolicy.
+// created provider gets (tests/phase4-exit-gate.sh), and inference endpoints
+// are left unbound; sessions use GenerateSessionPolicy.
 func GeneratePolicyWithHosts(repo string, miseHosts []string) (string, error) {
-	return GenerateSessionPolicy(repo, GitHubProviderType, miseHosts)
+	return GenerateSessionPolicy(repo, SessionProviders{GitHubProvider: GitHubProviderType}, miseHosts)
 }
 
-// GenerateSessionPolicy renders the policy for a session whose GitHub provider
-// instance is githubProvider. OpenShell rejects the policy unless that provider
-// is attached to the sandbox and uses an endpointless profile.
-func GenerateSessionPolicy(repo, githubProvider string, miseHosts []string) (string, error) {
-	return generatePolicyFrom(repo, openshell.SandboxPolicyTemplate, githubProvider, miseHosts)
+// GenerateSessionPolicy renders the policy for a session that attaches the
+// providers in p. OpenShell rejects the policy unless every named provider is
+// attached to the sandbox and uses an endpointless profile.
+func GenerateSessionPolicy(repo string, p SessionProviders, miseHosts []string) (string, error) {
+	return generatePolicyFrom(repo, openshell.SandboxPolicyTemplate, p, miseHosts)
 }
 
 // generatePolicyFrom renders tmpl for repo and writes it to a temp file.
-func generatePolicyFrom(repo string, tmpl []byte, githubProvider string, miseHosts []string) (string, error) {
+func generatePolicyFrom(repo string, tmpl []byte, p SessionProviders, miseHosts []string) (string, error) {
 	owner, name, err := ParseRepo(repo)
 	if err != nil {
 		return "", fmt.Errorf("invalid repository: %w", err)
 	}
-	if !providerNameRE.MatchString(githubProvider) {
-		return "", fmt.Errorf("invalid GitHub provider name %q", githubProvider)
+	if err := p.validate(); err != nil {
+		return "", err
 	}
 	content := tmpl
 
@@ -135,7 +176,7 @@ func generatePolicyFrom(repo string, tmpl []byte, githubProvider string, miseHos
 		return "", err
 	}
 
-	result, err := renderPolicy(string(content), policyData{Owner: owner, Repo: name, GitHubProvider: githubProvider, MiseExtraHosts: extra})
+	result, err := renderPolicy(string(content), policyData{Owner: owner, Repo: name, SessionProviders: p, MiseExtraHosts: extra})
 	if err != nil {
 		return "", err
 	}

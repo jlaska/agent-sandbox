@@ -1,6 +1,6 @@
 id: litellm-inference
 display_name: "LiteLLM Proxy (Homelab)"
-description: "LiteLLM proxy inference provider — routes to Vertex AI via homelab cluster. Used by Claude Code, Pi and opencode."
+description: "LiteLLM proxy inference provider — routes to Vertex AI via homelab cluster. Used by Claude Code, Pi and opencode. Credentials only; the per-session sandbox policy binds them to its LiteLLM endpoints."
 category: inference
 credentials:
   - name: litellm_api_key
@@ -27,17 +27,15 @@ credentials:
     auth_style: header
     header_name: x-litellm-api-key
     query_param: ""
-endpoints:
-  - host: litellm.internal.keener.us
-    port: 443
-    protocol: rest
-    access: read-write
-    enforcement: enforce
-# Real paths in the agent-* images (pi runs under node); see openshell/images/*/binaries.txt.
+# Credentials only, like github-agent-profile.yaml: profile endpoints would
+# become a `_provider_*` rule that unions with the sandbox policy and reopens
+# every path for every binary below. The per-session sandbox policy binds this
+# provider to its LiteLLM endpoints (credential_binding) instead.
+endpoints: []
+# Inert without endpoints; kept so the profile lists the agent binaries that
+# use it (real paths in the agent-* images; pi runs under node).
 binaries:
   - /usr/local/bin/claude
   - /usr/local/bin/node
   - /usr/local/bin/opencode
-  - /usr/bin/python3.12
-  - /usr/bin/curl
 inference_capable: true

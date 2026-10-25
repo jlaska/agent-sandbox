@@ -27,7 +27,7 @@ network layer — with credentials that self-destruct.
 | Layer | Enforcement |
 |---|---|
 | GitHub App + rulesets | Agent can only push `agent/**` branches, create PRs, comment. Cannot push `main`, merge, or manipulate tags. |
-| L7 network policy | Per-binary enforcement: only `git`/`gh` can reach GitHub, and only for the target repo (branch deletes limited to `agent/**`); only the harness can reach inference endpoints. Merge APIs blocked. Verified per rule by `make policy-matrix`. |
+| L7 network policy | Per-binary enforcement: only `git`/`gh` can reach GitHub, and only for the target repo (branch deletes limited to `agent/**`); only the harness can reach inference endpoints, and no telemetry hosts are allowed (Claude Code runs with `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`). Provider profiles carry credentials only; the policy binds each session's providers to their hosts. Merge APIs blocked. Verified per rule by `make policy-matrix`. |
 | Token scope | Single-repo scoped, auto-expires (~1h), revoked on exit. |
 | Container isolation | Rootless container, default-deny network, read-only system paths. |
 | Dependency cooldown | Package versions published in the last 3 days are not installed (npm, uv, mise). |
@@ -141,7 +141,12 @@ An OAuth token is stored as `ANTHROPIC_API_KEY`; the shell that launches
 `exec`. The `claude-code` profile sends the credential in the `x-api-key`
 header, so a Pro/Max OAuth token only works where that header is accepted (for
 example a LiteLLM proxy). `agent-run` imports the provider profiles it needs from copies embedded
-in the binary when the gateway does not have them.
+in the binary when the gateway does not have them, and updates a gateway copy
+that differs. The profiles have no endpoints: the sandbox policy binds each
+session's providers (`credential_binding`) to the hosts where their
+credentials may be used, so a profile cannot widen the policy. A profile
+attached to a running sandbox cannot be updated, so stop running sessions
+before upgrading `agent-run`.
 
 Each run is one session, identified by its sandbox name (`a-<harness>-<8 hex>`,
 for example `a-claude-3f9c01ab`). Its providers are named

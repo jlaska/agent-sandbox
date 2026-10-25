@@ -191,14 +191,16 @@ maps the `api_token` placeholder to the git credential protocol.
 
 ### Policy vs profile separation
 
-- **Provider profile**: defines the credentials only. The github-agent profile
-  is endpointless (`endpoints: []`): profile endpoints would add a
-  `_provider_*` rule that unions with the sandbox policy, and a generic profile
-  cannot be limited to one repository.
+- **Provider profile**: defines the credentials only. Every profile agent-run
+  imports (github-agent, and the claude-code, anthropic and litellm-inference
+  inference profiles) is endpointless (`endpoints: []`): profile endpoints
+  would add a `_provider_*` rule that unions with the sandbox policy, and a
+  generic profile cannot be limited to one repository or to inference paths.
 - **Sandbox policy**: defines the L7 allow/deny rules, and binds the session's
   GitHub provider (`credential_binding`) on every github.com / api.github.com
-  endpoint. The binding decides where the token placeholder is resolved; the
-  rules decide which requests are permitted.
+  endpoint, and the session's inference provider on its api.anthropic.com or
+  LiteLLM endpoints. The binding decides where a credential placeholder is
+  resolved; the rules decide which requests are permitted.
 
 ### GraphQL mutation control
 

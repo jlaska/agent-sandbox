@@ -48,13 +48,13 @@ pm_case git-github-releases     git  GET  "https://github.com/cli/cli/releases" 
 # --- Inference and telemetry, from the agent's process tree (node ancestor)
 pm_case node-anthropic-messages node POST "https://api.anthropic.com/v1/messages"                                               json-empty     allow allow  "inference"
 pm_case node-anthropic-files    node POST "https://api.anthropic.com/v1/files"                                                  json-empty     allow deny   "upload API reachable (exfil with any key)"
-pm_case curl-anthropic-files    curl POST "https://api.anthropic.com/v1/files"                                                  json-empty     record deny  "anthropic provider binds bare curl"
-pm_case node-sentry             node POST "https://sentry.io/api/0/policy-matrix-none/"                                         json-empty     allow deny   "anyone can own a Sentry project"
-pm_case node-statsig            node POST "https://statsig.anthropic.com/policy-matrix-none"                                    json-empty     allow record "telemetry"
+pm_case curl-anthropic-files    curl POST "https://api.anthropic.com/v1/files"                                                  json-empty     deny  deny   "curl reaches Anthropic only through a provider rule (profiles are endpointless)"
+pm_case node-sentry             node POST "https://sentry.io/api/0/policy-matrix-none/"                                         json-empty     deny  deny   "anyone can own a Sentry project (telemetry off, no rule)"
+pm_case node-statsig            node POST "https://statsig.anthropic.com/policy-matrix-none"                                    json-empty     deny  deny   "telemetry (off, no rule)"
 pm_case node-claude-platform    node POST "https://platform.claude.com/policy-matrix-none"                                      json-empty     allow record "platform"
 pm_case node-litellm-other      node POST "https://litellm.internal.keener.us/policy-matrix-none"                               json-empty     allow deny   "LiteLLM non-inference paths"
-pm_case curl-litellm            curl POST "https://litellm.internal.keener.us/v1/chat/completions"                              json-empty     allow deny   "bare curl bound to litellm"
-pm_case python-litellm          python POST "https://litellm.internal.keener.us/v1/chat/completions"                            json-empty     allow deny   "python3.12 bound to litellm"
+pm_case curl-litellm            curl POST "https://litellm.internal.keener.us/v1/chat/completions"                              json-empty     deny  deny   "bare curl bound to litellm (removed)"
+pm_case python-litellm          python POST "https://litellm.internal.keener.us/v1/chat/completions"                            json-empty     deny  deny   "python3.12 bound to litellm (removed)"
 
 # --- Hosts nobody is granted
 pm_case curl-unlisted           curl GET  "https://example.com/"                                                                none           deny  deny   "unlisted host"
