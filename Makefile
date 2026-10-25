@@ -18,11 +18,14 @@ SRC_DIR := ./cmd/agent-run
 PKG_DIR := ./internal/agentrun
 BUILD_DIR := ./bin
 
-.PHONY: all build clean test lint install setup help images image-claude image-pi image-opencode smoke lint-images lint-ci
+.PHONY: all build clean test lint install setup help images image-claude image-pi image-opencode smoke lint-images lint-ci policy-matrix
 
 # Extra flags for tests/images/smoke.sh (e.g. SMOKE_FLAGS=--skip-network). The strict
 # policy-path contract (every policy binary is in binaries.txt) always runs by default.
 SMOKE_FLAGS ?=
+
+# Extra flags for tests/policy-matrix.sh (e.g. MATRIX_FLAGS="--expect hardened").
+MATRIX_FLAGS ?=
 
 # Harnesses covered by `make smoke` (CI passes one, e.g. `make smoke HARNESSES=pi`).
 HARNESSES ?= claude pi opencode
@@ -109,6 +112,10 @@ smoke:
 	@for h in $(HARNESSES); do \
 		./tests/images/smoke.sh localhost/agent-$$h:local $$h $(SMOKE_FLAGS) || exit 1; \
 	done
+
+## policy-matrix: Probe every policy rule in a live sandbox (owner-run; needs a gateway and credentials)
+policy-matrix: build
+	./tests/policy-matrix.sh $(MATRIX_FLAGS)
 
 ## lint-images: Lint image Dockerfiles (hadolint) and image shell scripts (shellcheck)
 lint-images:
