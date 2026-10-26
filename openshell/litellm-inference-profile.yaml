@@ -1,6 +1,6 @@
 id: litellm-inference
-display_name: "LiteLLM Proxy (Homelab)"
-description: "LiteLLM proxy inference provider — routes to Vertex AI via homelab cluster. Used by Claude Code, Pi and opencode. Credentials only; the per-session sandbox policy binds them to its LiteLLM endpoints."
+display_name: "LiteLLM Proxy"
+description: "LiteLLM proxy inference provider. Used by Claude Code, Pi and opencode. Credentials only; the per-session sandbox policy binds them to its LiteLLM endpoints."
 category: inference
 credentials:
   - name: litellm_api_key

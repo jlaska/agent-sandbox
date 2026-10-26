@@ -56,7 +56,7 @@ func TestListAppRepos(t *testing.T) {
 	}
 
 	t.Run("successful listing", func(t *testing.T) {
-		httpDo = listMock(`{"repositories":[{"full_name":"jlaska/agent-sandbox"},{"full_name":"jlaska/homelab"}]}`)
+		httpDo = listMock(`{"repositories":[{"full_name":"jlaska/agent-sandbox"},{"full_name":"example/other-repo"}]}`)
 
 		repos, err := ListAppRepos()
 		if err != nil {
@@ -68,8 +68,8 @@ func TestListAppRepos(t *testing.T) {
 		if repos[0] != "jlaska/agent-sandbox" {
 			t.Errorf("repos[0] = %q, want jlaska/agent-sandbox", repos[0])
 		}
-		if repos[1] != "jlaska/homelab" {
-			t.Errorf("repos[1] = %q, want jlaska/homelab", repos[1])
+		if repos[1] != "example/other-repo" {
+			t.Errorf("repos[1] = %q, want example/other-repo", repos[1])
 		}
 		// The listing token reaches every repo on the installation, so it
 		// must not outlive the listing.

@@ -24,7 +24,7 @@ func TestParseRepo(t *testing.T) {
 		wantErr   bool
 	}{
 		{"jlaska/agent-sandbox", "jlaska", "agent-sandbox", false},
-		{"jlaska/homelab", "jlaska", "homelab", false},
+		{"example/other-repo", "example", "other-repo", false},
 		{"org/repo-name", "org", "repo-name", false},
 		{"org/repo.name", "org", "repo.name", false},
 		{"org/repo_name", "org", "repo_name", false},
@@ -105,17 +105,17 @@ func TestGeneratePolicy_SandboxTest(t *testing.T) {
 	if !strings.Contains(policy, "jlaska/agent-sandbox") {
 		t.Error("policy must contain jlaska/agent-sandbox")
 	}
-	if strings.Contains(policy, "jlaska/homelab") {
-		t.Error("policy must NOT contain jlaska/homelab")
+	if strings.Contains(policy, "example/other-repo") {
+		t.Error("policy must NOT contain example/other-repo")
 	}
 	if strings.Contains(policy, "{{.Owner}}") || strings.Contains(policy, "{{.Repo}}") {
 		t.Error("policy contains unresolved template placeholders")
 	}
 }
 
-func TestGeneratePolicy_Homelab(t *testing.T) {
+func TestGeneratePolicy_OtherRepo(t *testing.T) {
 
-	result, err := generateTestPolicy("jlaska/homelab")
+	result, err := generateTestPolicy("example/other-repo")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -127,8 +127,8 @@ func TestGeneratePolicy_Homelab(t *testing.T) {
 	}
 	policy := string(content)
 
-	if !strings.Contains(policy, "jlaska/homelab") {
-		t.Error("policy must contain jlaska/homelab")
+	if !strings.Contains(policy, "example/other-repo") {
+		t.Error("policy must contain example/other-repo")
 	}
 	if strings.Contains(policy, "agent-sandbox") {
 		t.Error("policy must NOT contain agent-sandbox")
