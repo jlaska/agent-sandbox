@@ -4,14 +4,12 @@
 
 Phase 6 proves the full agent workflow can produce review-ready pull requests
 on the target repository with no human GitHub authentication or YubiKey
-interaction. This graduation was performed against `jlaska/agent-sandbox-test`
-(adapted from the original `jlaska/homelab` target).
+interaction. This graduation was performed against `jlaska/agent-sandbox-test`.
 
 ## Adapted scope
 
-The original Phase 6 plan targets `jlaska/homelab`. For this iteration, all
-tasks were executed against `jlaska/agent-sandbox-test` — the same repository
-used in Phases 0–5. This means:
+All tasks were executed against `jlaska/agent-sandbox-test` — the same
+repository used in Phases 0–5. This means:
 
 - **6.1 (Inspect repository)** — conventions are already well understood from
   prior phases.
@@ -22,10 +20,9 @@ used in Phases 0–5. This means:
 - **6.4 (Review-ready PR proof)** — the full workflow is proven by the
   Phase 6 exit gate test and the security regression matrix.
 
-When graduating to `jlaska/homelab` in the future, the main new work will be:
-adding homelab to the App installation, applying rulesets, adding it to the
-`APPROVED_REPOS` allowlist, and generating repo-specific OpenShell network
-policy (which `agent-run` already supports via `generate_policy()`).
+Using `agent-run` on another repository needs the App installed on it and the
+same rulesets; `agent-run` generates the repo-specific OpenShell network policy
+for each session.
 
 ## 6.1 Repository conventions
 
@@ -108,15 +105,12 @@ workflow inside an OpenShell sandbox:
 | `tests/phase6-exit-gate.sh` | Graduation exit gate test (prerequisites + security regression + PR proof) |
 | `docs/phase6-graduation.md` | This document |
 
-## Graduating to jlaska/homelab
+## Using agent-run on another repository
 
-When ready to extend to homelab, follow these steps:
-
-1. **Add homelab to App installation** (GitHub UI — USER ACTION)
-2. **Apply rulesets** to homelab matching the agent-sandbox-test configuration
-3. **Verify Renovate** and existing automation still works
-4. **Add to allowlist**: append `"jlaska/homelab"` to `ApprovedRepos` in `internal/agentrun/config.go`
-5. **Run exit gate**: `bash tests/phase6-exit-gate.sh --repo jlaska/homelab`
-6. **Inspect homelab conventions** (Argo CD, Helm, Kustomize, pre-commit) and
-   adapt the sandbox policy if additional network endpoints are needed (e.g.,
-   container registries, Helm repos)
+1. **Add the repository to the App installation** (GitHub UI — USER ACTION)
+2. **Apply rulesets** matching this repository's configuration
+3. **Verify Renovate** and existing automation still work
+4. **Run the exit gate**: `bash tests/phase6-exit-gate.sh --repo <owner>/<repo>`
+5. **Inspect the repository's conventions** (build, deploy and pre-commit
+   tooling) and adapt the sandbox policy if additional network endpoints are
+   needed (e.g., container registries, package repositories)
