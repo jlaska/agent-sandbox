@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -231,8 +232,40 @@ func TestMintInstallationToken(t *testing.T) {
 		if err == nil {
 			t.Error("expected error for wrong repo in response")
 		}
-		if !strings.Contains(err.Error(), "unexpected repository") {
-			t.Errorf("error should mention unexpected repository: %v", err)
+		if !strings.Contains(err.Error(), "unexpected repositories") {
+			t.Errorf("error should mention unexpected repositories: %v", err)
+		}
+	})
+
+	// The scope check must not pass vacuously or with extra repos.
+	for name, repos := range map[string]string{
+		"no repositories list": ``,
+		"empty repositories":   `,"repositories":[]`,
+		"extra repository":     `,"repositories":[{"full_name":"owner/my-repo"},{"full_name":"owner/other-repo"}]`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			httpDo = func(req *http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: 201,
+					Body:       io.NopCloser(strings.NewReader(`{"token":"ghs_test","expires_at":"2025-01-01T00:00:00Z"` + repos + `}`)),
+				}, nil
+			}
+			if _, err := mintInstallationToken("jwt", "12345", "owner", "my-repo"); err == nil || !strings.Contains(err.Error(), "unexpected repositories") {
+				t.Errorf("err = %v, want an unexpected-repositories error", err)
+			}
+		})
+	}
+
+	t.Run("repo not accessible (422)", func(t *testing.T) {
+		httpDo = func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: 422,
+				Body:       io.NopCloser(strings.NewReader(`{"message":"There is at least one repository that does not exist or is not accessible to the parent installation."}`)),
+			}, nil
+		}
+		_, err := mintInstallationToken("jwt", "12345", "owner", "renamed")
+		if !errors.Is(err, errRepoNotAccessible) || !strings.Contains(err.Error(), "owner/renamed") {
+			t.Errorf("err = %v, want errRepoNotAccessible naming owner/renamed", err)
 		}
 	})
 

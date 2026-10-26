@@ -3,6 +3,7 @@ package agentrun
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -51,7 +52,12 @@ func ResolveGitHubCredential(cfg *Config) (*GitHubCredential, error) {
 
 	// 2. GitHub App token minting (requires PEM in keychain)
 	if appKeychainExists() {
+		// The token is scoped to cfg.Repo, so minting it is also the access
+		// check: GitHub refuses a repo the installation cannot reach.
 		result, err := MintToken(cfg.Repo)
+		if errors.Is(err, errRepoNotAccessible) {
+			return nil, fmt.Errorf("repository %q is not accessible via the GitHub App (a renamed repository must be given by its current name); use --list-repos to see available repos", cfg.Repo)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("GitHub App token minting failed: %w", err)
 		}
@@ -67,9 +73,10 @@ func ResolveGitHubCredential(cfg *Config) (*GitHubCredential, error) {
 		"  - Provide --github-token <PAT> or set GITHUB_TOKEN env var")
 }
 
-// ListAppRepos queries the GitHub App installation for accessible repositories.
-// It mints a short-lived installation token (scoped to all repos the App can
-// access) and queries GET /installation/repositories.
+// ListAppRepos queries the GitHub App installation for accessible repositories
+// (--list-repos). It mints a short-lived installation token scoped to all repos
+// the App can access, queries GET /installation/repositories, and revokes the
+// token before returning.
 func ListAppRepos() ([]string, error) {
 	keyPEM, err := getAppPrivateKey()
 	if err != nil {
@@ -86,6 +93,11 @@ func ListAppRepos() ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to mint token for repo listing: %w", err)
 	}
+	defer func() {
+		if err := revokeTokenFn(token); err != nil {
+			fmt.Fprintf(os.Stderr, "[agent-run] warning: could not revoke the repo-listing token (it expires within an hour): %v\n", err)
+		}
+	}()
 
 	url := fmt.Sprintf("%s/installation/repositories", githubAPIBase)
 	req, err := http.NewRequest("GET", url, nil)
@@ -125,18 +137,4 @@ func ListAppRepos() ([]string, error) {
 		repos = append(repos, r.FullName)
 	}
 	return repos, nil
-}
-
-// IsAppRepoAccessible checks if a repository is accessible via the GitHub App.
-func IsAppRepoAccessible(repo string) (bool, error) {
-	repos, err := ListAppRepos()
-	if err != nil {
-		return false, err
-	}
-	for _, r := range repos {
-		if r == repo {
-			return true, nil
-		}
-	}
-	return false, nil
 }
