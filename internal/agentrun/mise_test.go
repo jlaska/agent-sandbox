@@ -464,7 +464,7 @@ func TestNarrowingIndependentOfMise(t *testing.T) {
 			if err := runMisePhase(context.Background(), &Config{NoMise: true}, "sb1", noCache("docker")); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := enforceNarrowing(context.Background(), &Config{NoMise: true}, "sb1", nil); err != nil {
+			if _, err := enforceNarrowing(context.Background(), &Config{NoMise: true}, "sb1", nil, nil); err != nil {
 				t.Fatal(err)
 			}
 		})

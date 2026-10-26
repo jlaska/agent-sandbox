@@ -361,7 +361,7 @@ func run(ctx context.Context, cfg *Config) error {
 
 	// Step 11: Narrow egress before the agent starts. Fails closed: on error
 	// the sandbox is deleted and the token revoked before returning.
-	res, err := enforceNarrowing(ctx, cfg, sandboxName, ghCred)
+	res, err := enforceNarrowing(ctx, cfg, sandboxName, ghCred, nil)
 	if err != nil {
 		// Skip in the deferred cleanup only what enforceNarrowing really did;
 		// a failed sandbox delete is retried there.

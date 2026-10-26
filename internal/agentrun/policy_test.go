@@ -709,7 +709,7 @@ func TestNarrowPolicyCommandSequence(t *testing.T) {
 	withMockExec(t, func(m *mockCmd) {
 		narrowMock(t, "policy-get-effective-clean.json", "policy-rev-loaded.json", nil)(m)
 		var err error
-		captureStdout(t, func() { err = narrowPolicy(context.Background(), &Config{}, "sb1") })
+		captureStdout(t, func() { err = narrowPolicy(context.Background(), &Config{}, "sb1", nil) })
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -738,7 +738,7 @@ func TestVerifyNarrowedRejections(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			withMockExec(t, func(m *mockCmd) {
 				narrowMock(t, tt.effective, tt.rev, nil)(m)
-				_, err := verifyNarrowed(context.Background(), "sb1")
+				_, err := verifyNarrowed(context.Background(), "sb1", nil)
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 					t.Errorf("err = %v, want containing %q", err, tt.wantErr)
 				}
@@ -759,7 +759,7 @@ func TestVerifyNarrowedRejections(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			withMockExec(t, func(m *mockCmd) {
 				m.execOutput = func(string, ...string) (string, error) { return tt.body, nil }
-				if _, err := verifyNarrowed(context.Background(), "sb1"); err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				if _, err := verifyNarrowed(context.Background(), "sb1", nil); err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 					t.Errorf("err = %v, want containing %q", err, tt.wantErr)
 				}
 			})
@@ -768,7 +768,7 @@ func TestVerifyNarrowedRejections(t *testing.T) {
 	t.Run("garbage output", func(t *testing.T) {
 		withMockExec(t, func(m *mockCmd) {
 			m.execOutput = func(string, ...string) (string, error) { return "not json", nil }
-			if _, err := verifyNarrowed(context.Background(), "sb1"); err == nil {
+			if _, err := verifyNarrowed(context.Background(), "sb1", nil); err == nil {
 				t.Error("expected parse error")
 			}
 		})
@@ -781,7 +781,7 @@ func TestVerifyNarrowedRejections(t *testing.T) {
 				o, e := orig(n, a...)
 				return "warning: something\n" + o + "\ntrailer\n", e
 			}
-			if v, err := verifyNarrowed(context.Background(), "sb1"); err != nil || v != 3 {
+			if v, err := verifyNarrowed(context.Background(), "sb1", nil); err != nil || v != 3 {
 				t.Errorf("v=%d err=%v", v, err)
 			}
 		})
@@ -813,7 +813,7 @@ func TestEnforceNarrowingFailsClosed(t *testing.T) {
 			withMockExec(t, func(m *mockCmd) {
 				narrowMock(t, "policy-get-effective-clean.json", tt.rev, tt.updateErr)(m)
 				var err error
-				captureStdout(t, func() { _, err = enforceNarrowing(context.Background(), &Config{}, "sb1", tt.cred) })
+				captureStdout(t, func() { _, err = enforceNarrowing(context.Background(), &Config{}, "sb1", tt.cred, nil) })
 				if err == nil || !strings.Contains(err.Error(), "agent not launched") {
 					t.Fatalf("expected fail-closed error, got %v", err)
 				}
@@ -832,7 +832,7 @@ func TestEnforceNarrowingFailsClosed(t *testing.T) {
 		withMockExec(t, func(m *mockCmd) {
 			narrowMock(t, "policy-get-effective-clean.json", "policy-rev-loaded.json", nil)(m)
 			captureStdout(t, func() {
-				if _, err := enforceNarrowing(context.Background(), &Config{}, "sb1", app); err != nil {
+				if _, err := enforceNarrowing(context.Background(), &Config{}, "sb1", app, nil); err != nil {
 					t.Fatal(err)
 				}
 			})
@@ -841,4 +841,45 @@ func TestEnforceNarrowingFailsClosed(t *testing.T) {
 			}
 		})
 	})
+}
+
+func TestVerifyNarrowedRepoRules(t *testing.T) {
+	doc := func(rules string) string {
+		return `{"version":3,"status":"effective","policy_source":"sandbox","policy":{"network_policies":{"github_git":{"name":"g"}` + rules + `}}}`
+	}
+	const docsRule = `,"repo_docs_example_org":{"name":"repo_docs_example_org","endpoints":[{"host":"docs.example.org","port":443}]}`
+	want := map[string]string{"repo_docs_example_org": "docs.example.org"}
+	rev := readTestdata(t, "policy-rev-loaded.json")
+	for _, tt := range []struct {
+		name, rules string
+		want        map[string]string
+		wantErr     string
+	}{
+		{"exact", docsRule, want, ""},
+		{"none expected, none present", "", nil, ""},
+		{"missing", "", want, "is missing"},
+		{"extra", docsRule, nil, "did not grant"},
+		{"extra by name", `,"x":{"name":"repo_x","endpoints":[{"host":"x.example.org"}]}`, nil, "did not grant"},
+		{"wrong host", `,"repo_docs_example_org":{"name":"repo_docs_example_org","endpoints":[{"host":"evil.example.org","port":443}]}`, want, `endpoint for "evil.example.org"`},
+		{"second host", `,"repo_docs_example_org":{"name":"repo_docs_example_org","endpoints":[{"host":"docs.example.org"},{"host":"evil.example.org"}]}`, want, `endpoint for "evil.example.org"`},
+		{"no endpoints", `,"repo_docs_example_org":{"name":"repo_docs_example_org"}`, want, "no endpoints"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			withMockExec(t, func(m *mockCmd) {
+				m.execOutput = func(_ string, args ...string) (string, error) {
+					if slices.Contains(args, "--rev") {
+						return rev, nil
+					}
+					return doc(tt.rules), nil
+				}
+				_, err := verifyNarrowed(context.Background(), "sb1", tt.want)
+				if tt.wantErr == "" && err != nil {
+					t.Errorf("err = %v", err)
+				}
+				if tt.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tt.wantErr)) {
+					t.Errorf("err = %v, want containing %q", err, tt.wantErr)
+				}
+			})
+		})
+	}
 }

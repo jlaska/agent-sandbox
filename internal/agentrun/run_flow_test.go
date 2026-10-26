@@ -513,7 +513,7 @@ func TestEnforceNarrowingFailClosedAfterInterrupt(t *testing.T) {
 			return c.Err()
 		}
 		var res narrowOutcome
-		captureStdout(t, func() { res, _ = enforceNarrowing(ctx, &Config{}, "sb", nil) })
+		captureStdout(t, func() { res, _ = enforceNarrowing(ctx, &Config{}, "sb", nil, nil) })
 		if !res.SandboxDeleted || deleteCtx == nil || deleteCtx.Err() != nil {
 			t.Errorf("fail-closed delete did not run under a live context: res=%+v", res)
 		}
