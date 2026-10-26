@@ -453,6 +453,20 @@ make policy-matrix MATRIX_FLAGS="--expect hardened"  # verdicts for the hardened
 Each case records today's decision and the decision expected after baseline
 hardening. Cases where the two differ are marked `[hardened: ...]`.
 
+`--repo-policy granted|ungranted` runs only the repository policy cases, on the
+fixture `jlaska/agent-sandbox-mise-fixture`, whose `.agent-policy.yaml`
+requests `example.org` as optional. With `granted` the session gets
+`--allow-host example.org`. The script first checks that `repo_example_org` is
+in the loaded policy, then that a GET from the harness's process tree is
+allowed, a POST is denied with `policy_denied`, bare `curl` is denied and
+`example.net` (never requested) is denied. With `ungranted` it checks for the
+omission warning and that no `repo_*` rule is loaded, and every case is denied.
+
+```bash
+make policy-matrix MATRIX_FLAGS="--repo-policy granted"
+make policy-matrix MATRIX_FLAGS="--repo-policy ungranted"
+```
+
 ### Workflow gate
 
 `make workflow-gate` works a repository from inside a real session the way an
