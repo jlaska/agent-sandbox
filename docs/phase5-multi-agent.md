@@ -130,7 +130,7 @@ Per the Phase 5 plan: "OpenClaw proven, or a concrete upstream blocker is docume
 | `openshell/litellm-inference-profile.yaml` | Custom OpenShell provider profile for LiteLLM inference |
 | `openshell/sandbox-policy.yaml` | Updated with LiteLLM, npm registry, and telemetry network policies |
 | `scripts/agent-run.sh` | Updated with multi-agent support (claude, pi) and inference providers |
-| `tests/phase5-exit-gate.sh` | Per-agent acceptance matrix test suite (16 tests each) |
+| `tests/phase5-exit-gate.sh` | Per-agent acceptance matrix test suite (16 tests each); since replaced by `tests/workflow-gate.sh` |
 | `docs/phase5-multi-agent.md` | This document |
 
 ## Common GitHub security policy

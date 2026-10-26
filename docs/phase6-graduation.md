@@ -62,7 +62,8 @@ for each session.
 
 ## 6.4 Review-ready PR proof
 
-The Phase 6 exit gate test (`tests/phase6-exit-gate.sh`) proves the complete
+The Phase 6 exit gate test (`tests/phase6-exit-gate.sh`, since replaced by
+`tests/workflow-gate.sh`) proves the complete
 workflow inside an OpenShell sandbox:
 
 1. Clone the approved repository
@@ -102,7 +103,7 @@ workflow inside an OpenShell sandbox:
 
 | File | Purpose |
 |---|---|
-| `tests/phase6-exit-gate.sh` | Graduation exit gate test (prerequisites + security regression + PR proof) |
+| `tests/phase6-exit-gate.sh` | Graduation exit gate test (prerequisites + security regression + PR proof); since replaced by `tests/workflow-gate.sh` |
 | `docs/phase6-graduation.md` | This document |
 
 ## Using agent-run on another repository
@@ -110,7 +111,7 @@ workflow inside an OpenShell sandbox:
 1. **Add the repository to the App installation** (GitHub UI — USER ACTION)
 2. **Apply rulesets** matching this repository's configuration
 3. **Verify Renovate** and existing automation still work
-4. **Run the exit gate**: `bash tests/phase6-exit-gate.sh --repo <owner>/<repo>`
+4. **Run the exit gate**: `./tests/workflow-gate.sh --repo <owner>/<repo>`
 5. **Inspect the repository's conventions** (build, deploy and pre-commit
    tooling) and adapt the sandbox policy if additional network endpoints are
    needed (e.g., container registries, package repositories)

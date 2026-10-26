@@ -18,7 +18,7 @@ SRC_DIR := ./cmd/agent-run
 PKG_DIR := ./internal/agentrun
 BUILD_DIR := ./bin
 
-.PHONY: all build clean test lint install setup help images image-claude image-pi image-opencode smoke lint-images lint-ci policy-matrix
+.PHONY: all build clean test lint install setup help images image-claude image-pi image-opencode smoke lint-images lint-ci policy-matrix workflow-gate
 
 # Extra flags for tests/images/smoke.sh (e.g. SMOKE_FLAGS=--skip-network). The strict
 # policy-path contract (every policy binary is in binaries.txt) always runs by default.
@@ -116,6 +116,13 @@ smoke:
 ## policy-matrix: Probe every policy rule in a live sandbox (owner-run; needs a gateway and credentials)
 policy-matrix: build
 	./tests/policy-matrix.sh $(MATRIX_FLAGS)
+
+# Extra flags for tests/workflow-gate.sh (e.g. GATE_FLAGS="--harness pi").
+GATE_FLAGS ?=
+
+## workflow-gate: Run the agent's GitHub workflow end to end in a live session (owner-run)
+workflow-gate: build
+	./tests/workflow-gate.sh $(GATE_FLAGS)
 
 ## lint-images: Lint image Dockerfiles (hadolint) and image shell scripts (shellcheck)
 lint-images:
