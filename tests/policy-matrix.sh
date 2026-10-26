@@ -212,51 +212,8 @@ esac
 
 # --- Session (same stdin-hold technique as tests/phase7-exit-gate.sh) ---
 WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/policy-matrix.XXXXXX")"
-S_PID="" S_HOLD="" S_LOG="$WORKDIR/agent-run.log" OWN_SESSION=false
-
-hold_args() { case "$HARNESS" in claude|pi) echo "-p" ;; opencode) echo "run" ;; esac; }
-
-start_session() {
-    local fifo="$WORKDIR/stdin.fifo" holdargs args=() waited=0
-    mkfifo "$fifo" || return 1
-    read -r -a holdargs <<<"$(hold_args)"
-    [[ -n "$IMAGE" ]] && args+=(--image "$IMAGE")
-    # One byte up front: claude -p proceeds without stdin if none arrives in 3s.
-    (printf ' '; exec sleep "$HOLD_SECONDS") >"$fifo" &
-    S_HOLD=$!
-    "$AGENT_RUN" "$REPO" "$HARNESS" ${args[@]+"${args[@]}"} ${AGENT_ARGS[@]+"${AGENT_ARGS[@]}"} \
-        -- "${holdargs[@]}" <"$fifo" >"$S_LOG" 2>&1 &
-    S_PID=$!
-    OWN_SESSION=true
-    while [[ $waited -lt $TIMEOUT ]]; do
-        grep -q 'Launching harness' "$S_LOG" 2>/dev/null && break
-        kill -0 "$S_PID" 2>/dev/null || break
-        sleep 2; waited=$((waited + 2))
-    done
-    SANDBOX="$(sed -n 's/^\[agent-run\] Sandbox: *//p' "$S_LOG" | head -n1)"
-    if ! grep -q 'Launching harness' "$S_LOG" 2>/dev/null; then
-        echo "agent-run did not reach 'Launching harness'; last lines of $S_LOG:" >&2
-        tail -n 8 "$S_LOG" | sed 's/^/  | /' >&2
-        return 1
-    fi
-    sleep 3
-    kill -0 "$S_PID" 2>/dev/null || { echo "harness exited right after launch (log: $S_LOG)" >&2; return 1; }
-}
-
-# SIGTERM, never stdin EOF: EOF would send the primed byte to the harness as a prompt.
-end_session() {
-    [[ "$OWN_SESSION" == true ]] || return 0
-    local i=0
-    kill -TERM "$S_PID" 2>/dev/null
-    while [[ $i -lt 60 ]] && kill -0 "$S_PID" 2>/dev/null; do sleep 2; i=$((i + 1)); done
-    if kill -0 "$S_PID" 2>/dev/null; then
-        kill -KILL "$S_PID" 2>/dev/null
-        [[ -n "$SANDBOX" ]] && openshell sandbox delete "$SANDBOX" >/dev/null 2>&1
-    fi
-    wait "$S_PID" 2>/dev/null
-    [[ -n "$S_HOLD" ]] && { kill "$S_HOLD" 2>/dev/null; wait "$S_HOLD" 2>/dev/null; }
-    OWN_SESSION=false
-}
+# shellcheck source=tests/lib/session.sh
+source "${SCRIPT_DIR}/lib/session.sh"
 
 finish() {
     end_session

@@ -146,8 +146,8 @@ func GeneratePolicy(repo string) (string, error) {
 
 // GeneratePolicyWithHosts is GeneratePolicy plus extra hosts (host[:port]) that
 // the temporary mise_bootstrap rule may reach. The GitHub endpoints bind a
-// provider named GitHubProviderType ("github-agent"), the name a manually
-// created provider gets (tests/phase4-exit-gate.sh), and inference endpoints
+// provider named GitHubProviderType ("github-agent"), the name to give a
+// manually created provider, and inference endpoints
 // are left unbound; sessions use GenerateSessionPolicy.
 func GeneratePolicyWithHosts(repo string, miseHosts []string) (string, error) {
 	return GenerateSessionPolicy(repo, SessionProviders{GitHubProvider: GitHubProviderType}, miseHosts)

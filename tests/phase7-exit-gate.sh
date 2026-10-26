@@ -633,7 +633,7 @@ probe_inference() { # target
             fi
             ;;
         claude)
-            skip "[$target] inference-auth (claude is covered by phase5-exit-gate.sh claude)"
+            skip "[$target] inference-auth (claude is covered by workflow-gate.sh)"
             ;;
     esac
 }

@@ -400,6 +400,24 @@ make policy-matrix MATRIX_FLAGS="--expect hardened"  # verdicts for the hardened
 Each case records today's decision and the decision expected after baseline
 hardening. Cases where the two differ are marked `[hardened: ...]`.
 
+### Workflow gate
+
+`make workflow-gate` works a repository from inside a real session the way an
+agent does: it pushes `agent/**` branches, opens a draft PR, comments, reviews,
+reads checks and marks the PR ready. It also requires each forbidden operation
+to be refused for the right reason. GitHub rulesets must refuse pushes to
+`main`, non-agent branches and tags. OpenShell must refuse merges, auto-merge
+and other repositories. Any other failure counts as a FAIL. A second short
+session asks the harness for a reply through its real inference provider. The
+default target is the public fixture `jlaska/agent-sandbox-mise-fixture`, which
+has this repository's rulesets. Branches and the PR are removed on exit.
+
+```bash
+make workflow-gate                                                   # claude
+./tests/workflow-gate.sh --harness pi -- --model gpt-6-luna
+./tests/workflow-gate.sh --harness opencode -- --inference litellm --model litellm/gpt-6-luna
+```
+
 ## License
 
 See [LICENSE](LICENSE) for details.
