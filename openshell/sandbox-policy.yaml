@@ -127,6 +127,10 @@ network_policies:
     binaries:
       - { path: /usr/local/bin/gh }
 
+  # Claude via LiteLLM (Anthropic Messages) and pi (pi-provider-litellm: model
+  # discovery, then Messages, Chat Completions or Responses by route). Paths are
+  # pinned as for anthropic_api below. Denied: /mcp (LiteLLM's MCP gateway
+  # reaches other systems), key/user/team admin, spend logs, skills/plugins.
   litellm_inference:
     name: litellm-inference
     endpoints:
@@ -138,10 +142,22 @@ network_policies:
         rules:
           - allow:
               method: POST
-              path: "/**"
+              path: "/v1/messages"
+          - allow:
+              method: POST
+              path: "/v1/messages/count_tokens"
+          - allow:
+              method: POST
+              path: "/v1/chat/completions"
+          - allow:
+              method: POST
+              path: "/v1/responses"
           - allow:
               method: GET
-              path: "/**"
+              path: "/model/info"
+          - allow:
+              method: GET
+              path: "/v1/models"
     binaries:
       - { path: /usr/local/bin/claude }
       - { path: /usr/local/bin/node }
@@ -239,6 +255,10 @@ network_policies:
       - { path: /usr/local/bin/claude }
       - { path: /usr/local/bin/node }
 
+  # Inference rules allow only the paths harnesses were seen to use
+  # (tests/l7-capture.sh). The credential is bound here, so a broader rule would
+  # let the agent use it for anything the key can do: upload files, store
+  # batches, read past results. Model listing is read-only metadata.
   anthropic_api:
     name: anthropic-api
     endpoints:
@@ -250,10 +270,22 @@ network_policies:
         rules:
           - allow:
               method: POST
-              path: "/**"
+              path: "/v1/messages"
+          - allow:
+              method: POST
+              path: "/v1/messages/count_tokens"
           - allow:
               method: GET
-              path: "/**"
+              path: "/v1/models"
+          - allow:
+              method: GET
+              path: "/v1/models/*"
+          - allow:
+              method: GET
+              path: "/api/claude_code/policy_limits"
+          - allow:
+              method: GET
+              path: "/api/claude_code/settings"
     binaries:
       - { path: /usr/local/bin/claude }
       - { path: /usr/local/bin/node }
@@ -294,10 +326,16 @@ network_policies:
         rules:
           - allow:
               method: POST
-              path: "/**"
+              path: "/chat/completions"
+          - allow:
+              method: POST
+              path: "/v1/chat/completions"
           - allow:
               method: GET
-              path: "/**"
+              path: "/models"
+          - allow:
+              method: GET
+              path: "/v1/models"
     binaries:
       - { path: /usr/local/bin/opencode }
 
@@ -312,10 +350,13 @@ network_policies:
         rules:
           - allow:
               method: POST
-              path: "/**"
+              path: "/v1/messages"
           - allow:
               method: GET
-              path: "/**"
+              path: "/v1/models"
+          - allow:
+              method: GET
+              path: "/v1/models/*"
     binaries:
       - { path: /usr/local/bin/opencode }
 
