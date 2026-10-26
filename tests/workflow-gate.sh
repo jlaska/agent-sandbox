@@ -58,7 +58,7 @@ Options:
   --harness H           claude | pi | opencode (default: claude)
   --image REF           harness image (default: images.yaml via agent-run)
   --skip-inference      skip the inference round trip
-  --keep-logs           keep the agent-run logs
+  --keep-logs           keep the agent-run logs (always kept on a FAIL)
   -- ARGS...            extra agent-run options for both sessions
   -h, --help            show this help
 USAGE
@@ -136,7 +136,7 @@ cleanup() {
         gh api -X DELETE "repos/$REPO/git/refs/heads/$b" >/dev/null 2>&1
     done
     gh api -X DELETE "repos/$REPO/git/refs/tags/$TAG" >/dev/null 2>&1
-    if [[ "$KEEP_LOGS" == true ]]; then echo "logs kept in $WORKDIR"; else rm -rf "$WORKDIR"; fi
+    if [[ "$KEEP_LOGS" == true || $FAIL -gt 0 ]]; then echo "logs kept in $WORKDIR"; else rm -rf "$WORKDIR"; fi
 }
 trap cleanup EXIT
 trap 'exit 130' INT TERM HUP
@@ -246,7 +246,16 @@ else
     if grep -v 'Reply with exactly' "$WORKDIR/inference.log" | grep -q 'WORKFLOW-GATE-OK'; then
         pass "inference round trip"
     else
-        fail "inference round trip ($(tail1 "$(cat "$WORKDIR/inference.log")"))"
+        # The harness's output sits between agent-run's launch and cleanup
+        # lines; if it never launched, agent-run's own last lines say why.
+        harness_out="$(awk '/^\[agent-run\] Working directory:/ {on=1; next} on && /^(\[agent-run\]|--- Cleanup ---)/ {exit} on && !/^---$/' "$WORKDIR/inference.log")"
+        if grep -q 'Launching harness' "$WORKDIR/inference.log"; then
+            fail "inference round trip: no WORKFLOW-GATE-OK in the harness output; its last lines:"
+        else
+            fail "inference round trip: the harness never launched; agent-run's last lines:"
+            harness_out="$(cat "$WORKDIR/inference.log")"
+        fi
+        printf '%s\n' "$harness_out" | sed '/^[[:space:]]*$/d' | tail -n 8 | sed 's/^/         | /'
     fi
 fi
 
