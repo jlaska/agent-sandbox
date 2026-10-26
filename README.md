@@ -268,7 +268,9 @@ grants:
 ```
 
 `--no-repo-policy` ignores the manifest. OpenShell's runtime denials remain the
-final enforcement boundary.
+final enforcement boundary. See [docs/agent-policy.md](docs/agent-policy.md)
+for the full manifest and grants reference, the restricted hosts and
+`--explain-policy` output.
 
 ## Harness images
 
