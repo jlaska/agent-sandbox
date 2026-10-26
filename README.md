@@ -10,10 +10,12 @@ per-repository GitHub security constraints.
 
 1. Check the OpenShell CLI version (>= 0.1.4) and resolve the harness image
 2. Resolve GitHub credentials (App token or PAT)
-3. Generate a repo-scoped L7 network policy
+3. Pin the default branch to a commit and compile a repo-scoped L7 network
+   policy: the baseline plus any `.agent-policy.yaml` requests the caller
+   granted (see [Repository network requests](#repository-network-requests))
 4. Create an isolated container from the harness image, with credential
    injection and an optional per-repo toolchain cache
-5. Clone the target repo, configure Git identity
+5. Clone the target repo at the pinned commit, configure Git identity
 6. Install the repo's [mise](https://mise.jdx.dev) toolchain (if it has one),
    then remove the temporary install egress from the policy
 7. Launch the agent harness
@@ -28,6 +30,7 @@ network layer — with credentials that self-destruct.
 |---|---|
 | GitHub App + rulesets | Agent can only push `agent/**` branches, create PRs, comment. Cannot push `main`, merge, or manipulate tags. |
 | L7 network policy | Per-binary enforcement: only `git`/`gh` can reach GitHub, and only for the target repo (branch deletes limited to `agent/**`); only the harness can reach inference endpoints, and only their inference and model-listing paths (no file uploads, batches, MCP gateway or key admin), and no telemetry hosts are allowed (Claude Code runs with `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`). Provider profiles carry credentials only; the policy binds each session's providers to their hosts. Merge APIs blocked. Verified per rule by `make policy-matrix`. |
+| Repository requests | A repo can ask for extra HTTPS hosts in `.agent-policy.yaml`, but only the caller grants them (`--allow-host`, `--grants`). Grants never add a host the repo did not request, and cannot override the hard boundaries (IP literals, local and metadata names, GitHub hosts, hosts the baseline already governs). Every check runs before any sandbox resource exists; the loaded policy must contain exactly the granted `repo_*` rules. |
 | Token scope | Single-repo scoped (minting it is the access check; agent-run never mints an installation-wide token for a session), auto-expires (~1h), revoked on exit. |
 | Container isolation | Rootless container, default-deny network, read-only system paths enforced by Landlock (`hard_requirement`: the sandbox does not start without it). |
 | Dependency cooldown | Package versions published in the last 3 days are not installed (npm, uv, mise). |
@@ -206,6 +209,10 @@ agent-run jlaska/agent-sandbox claude -- --model opus-4-8 --allowedTools Bash,Re
 | `--fresh-cache` | Clear the mise cache before installing (cannot be combined with `--no-cache`) |
 | `--no-cache` | Do not mount a persistent mise cache |
 | `--mise-allow-host host[:port]` | Extra host allowed during mise install (repeatable; default port 443) |
+| `--allow-host <host>` | Grant the repo's `.agent-policy.yaml` request for `host` (HTTPS GET/HEAD on any path; repeatable) |
+| `--grants <file>` | Grants file authorizing repo requests (per host: repos, methods, paths) |
+| `--no-repo-policy` | Ignore the repo's `.agent-policy.yaml` and use the baseline policy |
+| `--explain-policy` | Resolve and compile the session policy, print every decision and exit; creates no sandbox or providers and revokes its token |
 | `--inference litellm\|anthropic` | Inference backend (opencode only) |
 | `--driver docker\|podman\|kubernetes\|vm` | Override compute driver detection |
 | `--github-token <t>` | Use a GitHub PAT instead of App token |
@@ -213,9 +220,55 @@ agent-run jlaska/agent-sandbox claude -- --model opus-4-8 --allowedTools Bash,Re
 | `--list-repos` | List repositories accessible to the GitHub App |
 | `--mint-token <owner/repo>` | Mint a repo-scoped token and print it (for scripts) |
 | `--revoke-token <t>` | Revoke a previously minted token |
-| `--generate-policy <owner/repo>` | Generate a repo-scoped policy file and print its path |
+| `--generate-policy <owner/repo>` | Generate the repo-scoped baseline policy file and print its path (no repo requests; the repo policy flags do not apply) |
 | `--version` | Print the agent-run version (the release tag; `git describe` for `make build`) |
 | `--help` | Print usage |
+
+### Repository network requests
+
+The trust boundary is: the repository requests, the caller grants. A repo may
+commit `.agent-policy.yaml` asking for HTTPS access to extra hosts:
+
+```yaml
+version: 1
+network:
+  - host: docs.example.org
+    reason: "fetch API reference docs"
+    optional: true   # default false
+```
+
+Before creating anything, `agent-run` resolves the default branch to a commit
+SHA, reads the manifest at that commit through the GitHub API and compiles the
+session policy. A request becomes a `repo_*` rule (HTTPS on 443, for the
+harness process) only when a caller grant covers it. A required request with
+no grant fails the run; an optional one is left out with a warning. Malformed
+or oversized (over 64 KiB) manifests and requests or grants for prohibited
+hosts fail too. The sandbox then clones exactly that commit, even if the
+branch moved since.
+
+```bash
+# What would this run be allowed? (no sandbox, no providers, no clone)
+agent-run example/other-repo claude --explain-policy --allow-host docs.example.org
+
+# Grant it for this run (GET/HEAD on every path)
+agent-run example/other-repo claude --allow-host docs.example.org
+
+# Or from a grants file, scoped per repo, method and path
+agent-run example/other-repo claude --grants ./grants.yaml
+```
+
+```yaml
+# grants.yaml
+version: 1
+grants:
+  - host: docs.example.org
+    repos: [example/other-repo]  # optional; omitted = any repo
+    methods: [GET, HEAD]         # optional; default [GET, HEAD]
+    paths: ["/api/**"]           # optional; default ["/**"]
+```
+
+`--no-repo-policy` ignores the manifest. OpenShell's runtime denials remain the
+final enforcement boundary.
 
 ## Harness images
 
