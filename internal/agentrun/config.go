@@ -47,6 +47,12 @@ type Config struct {
 	Inference      string   // --inference litellm|anthropic (opencode only)
 	Driver         string   // --driver: override compute driver detection
 
+	// Repository policy flags (see policy_preflight.go)
+	AllowHosts    []string // --allow-host (repeatable): grant the repo's request for HOST
+	GrantsFile    string   // --grants FILE: caller grants file
+	NoRepoPolicy  bool     // --no-repo-policy: ignore the repo's .agent-policy.yaml
+	ExplainPolicy bool     // --explain-policy: preflight and compile only, then exit
+
 	// Passthrough args (everything after --)
 	PassthroughArgs []string
 }
@@ -62,6 +68,17 @@ func (e *envVarCollector) Set(val string) error {
 		return fmt.Errorf("env var must be in KEY=VALUE format: %q", val)
 	}
 	*e.values = append(*e.values, val)
+	return nil
+}
+
+// stringsCollector implements flag.Value for repeatable string flags.
+type stringsCollector struct {
+	values *[]string
+}
+
+func (s *stringsCollector) String() string { return "" }
+func (s *stringsCollector) Set(val string) error {
+	*s.values = append(*s.values, val)
 	return nil
 }
 
@@ -131,6 +148,10 @@ func ParseArgs(args []string) (*Config, error) {
 	fs.Var(&hostPortCollector{values: &cfg.MiseAllowHosts}, "mise-allow-host", "extra host[:port] allowed during mise install (repeatable)")
 	fs.StringVar(&cfg.Inference, "inference", "", "inference backend: litellm|anthropic (opencode only)")
 	fs.StringVar(&cfg.Driver, "driver", "", "compute driver override: docker|podman|kubernetes|vm")
+	fs.Var(&stringsCollector{values: &cfg.AllowHosts}, "allow-host", "grant the repository's .agent-policy.yaml request for HOST (repeatable)")
+	fs.StringVar(&cfg.GrantsFile, "grants", "", "caller grants file authorizing repository network requests")
+	fs.BoolVar(&cfg.NoRepoPolicy, "no-repo-policy", false, "ignore the repository's .agent-policy.yaml")
+	fs.BoolVar(&cfg.ExplainPolicy, "explain-policy", false, "resolve and explain the session policy, then exit (creates nothing)")
 
 	// Split at -- separator: everything after becomes passthrough args.
 	for i, a := range args {
@@ -146,6 +167,7 @@ func ParseArgs(args []string) (*Config, error) {
 	flagsWithValue := map[string]bool{
 		"--model": true, "--revoke-token": true, "--env": true, "--github-token": true,
 		"--image": true, "--mise-allow-host": true, "--inference": true, "--driver": true,
+		"--allow-host": true, "--grants": true,
 	}
 	for i := 0; i < len(args); i++ {
 		a := args[i]
@@ -202,6 +224,11 @@ func ParseArgs(args []string) (*Config, error) {
 				return nil, fmt.Errorf("usage: agent-run --mint-token <owner/repo>")
 			}
 			return nil, fmt.Errorf("usage: agent-run --generate-policy <owner/repo>")
+		}
+		// The repository policy flags need a session (a harness and the
+		// repo's manifest); --generate-policy stays the baseline policy.
+		if cfg.GeneratePolicy && (len(cfg.AllowHosts) > 0 || cfg.GrantsFile != "" || cfg.NoRepoPolicy || cfg.ExplainPolicy) {
+			return nil, fmt.Errorf("--allow-host, --grants, --no-repo-policy and --explain-policy do not apply to --generate-policy, which prints the baseline policy only (use: agent-run <owner/repo> <harness> --explain-policy)")
 		}
 		cfg.Repo = positional[0]
 		if _, _, err := ParseRepo(cfg.Repo); err != nil {
@@ -273,6 +300,10 @@ func (c *Config) Validate() error {
 			return err
 		}
 	}
+	// Syntax only; the universal host restrictions are the compiler's.
+	if _, err := AllowHostGrants(c.AllowHosts); err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -301,6 +332,11 @@ func printUsage() {
 	fmt.Println("                  Inference backend (opencode only)")
 	fmt.Println("  --driver docker|podman|kubernetes|vm")
 	fmt.Println("                  Override compute driver detection")
+	fmt.Println("  --allow-host <host>")
+	fmt.Println("                  Grant the repo's .agent-policy.yaml request for host (HTTPS\n                  GET/HEAD; repeatable). A grant never adds a host the repo\n                  did not request")
+	fmt.Println("  --grants <file> Caller grants file authorizing repo network requests")
+	fmt.Println("  --no-repo-policy\n                  Ignore the repo's .agent-policy.yaml (baseline policy only)")
+	fmt.Println("  --explain-policy\n                  Resolve the repo policy, print each decision and exit\n                  (creates no sandbox or providers)")
 	fmt.Println("  --diag          Print diagnostic info")
 	fmt.Println("  --github-token <pat>\n                  GitHub PAT (alternative to the App token)")
 	fmt.Println("  --list-repos    List approved repositories")
