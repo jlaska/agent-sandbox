@@ -21,6 +21,17 @@
 # (Integration) can bypass them. Unless --skip-inference, a second short
 # session asks the harness to reply with a token, through its real provider.
 #
+# Repository policy: the fixture's .agent-policy.yaml requests example.org as
+# optional. Before the session, --explain-policy (no sandbox) must report that
+# request omitted with a warning when nothing grants it, and must reject
+# --allow-host 169.254.169.254 (IP literal) and --allow-host api.github.com
+# (governed by the baseline); a real session with the latter must fail before
+# creating a sandbox. The main session then runs with --allow-host
+# example.org: repo_example_org must be loaded, and from the harness's process
+# tree a GET must succeed and a POST be refused (policy_denied). The extra rule
+# only adds example.org, so every other check is unaffected. With a --repo
+# whose manifest does not request example.org these checks are skipped.
+#
 # Usage:
 #   ./tests/workflow-gate.sh                                   # claude on the fixture repo
 #   ./tests/workflow-gate.sh --harness pi -- --model gpt-6-luna
@@ -127,6 +138,20 @@ expect_policy() {
     fi
 }
 
+# explain ARGS...: agent-run --explain-policy (creates nothing). Output to
+# $out, status to $rc.
+explain() {
+    out="$("$AGENT_RUN" "$REPO" "$HARNESS" ${AGENT_ARGS[@]+"${AGENT_ARGS[@]}"} "$@" --explain-policy 2>&1)"
+    rc=$?
+}
+
+# node_sh CMD: run CMD in /sandbox/repo as a child of node, i.e. from the
+# harness's process tree, which a repo rule binds (claude and pi run on node).
+node_sh() {
+    # shellcheck disable=SC2016  # JavaScript, not shell
+    sbr "node -e 'require(\"child_process\").execFileSync(\"bash\", [\"-c\", process.argv[1]], {stdio: \"inherit\"})' -- $(printf '%q' "$1")"
+}
+
 # shellcheck disable=SC2329  # invoked via trap
 cleanup() {
     end_session
@@ -161,10 +186,83 @@ else
     fail "rulesets have Integration bypass actors: $(echo "$app_bypass" | tr '\n' ' ')"
 fi
 
+# --- Repository policy, before any sandbox ---
+POLICY_HOST="example.org"
+POLICY_RULE="repo_${POLICY_HOST//./_}"
+REPO_POLICY=false
+explain
+if [[ $rc -ne 0 ]]; then
+    fail "explain policy (no grant) exited $rc ($(tail1 "$out"))"
+elif ! printf '%s\n' "$out" | grep -q "omitted $POLICY_HOST: optional and not granted"; then
+    echo "SKIP   repository policy checks: $REPO's manifest does not request $POLICY_HOST (Manifest: $(printf '%s\n' "$out" | sed -n 's/^Manifest: *//p'))"
+else
+    REPO_POLICY=true
+    if printf '%s\n' "$out" | grep -q "warning: optional request for $POLICY_HOST .* was omitted"; then
+        pass "no grant: optional $POLICY_HOST request omitted with a warning"
+    else
+        fail "no grant: no omission warning for $POLICY_HOST ($(tail1 "$out"))"
+    fi
+fi
+explain --allow-host 169.254.169.254
+if [[ $rc -ne 0 ]] && printf '%s' "$out" | grep -q 'IP address literals are not allowed'; then
+    pass "--allow-host 169.254.169.254 rejected (IP literal)"
+else
+    fail "--allow-host 169.254.169.254 not rejected as an IP literal (rc=$rc; $(tail1 "$out"))"
+fi
+explain --allow-host api.github.com
+if [[ $rc -ne 0 ]] && printf '%s' "$out" | grep -q 'api.github.com cannot be granted: already governed by the baseline'; then
+    pass "--allow-host api.github.com rejected (baseline host)"
+else
+    fail "--allow-host api.github.com not rejected as a baseline host (rc=$rc; $(tail1 "$out"))"
+fi
+# The same grant in a real session fails in the preflight: no sandbox. The
+# harness args only matter if a regression let it through (it exits at once).
+"$AGENT_RUN" "$REPO" "$HARNESS" ${AGENT_ARGS[@]+"${AGENT_ARGS[@]}"} --allow-host api.github.com \
+    -- "$(hold_args)" </dev/null >"$WORKDIR/restricted.log" 2>&1
+rc=$?
+rsbx="$(sed -n 's/^\[agent-run\] Sandbox: *//p' "$WORKDIR/restricted.log" | head -n1)"
+after="$(openshell sandbox list 2>&1)"
+if [[ $rc -eq 0 ]] || ! grep -q 'repository policy rejected' "$WORKDIR/restricted.log"; then
+    fail "session with --allow-host api.github.com did not fail its preflight (rc=$rc; $(tail1 "$(cat "$WORKDIR/restricted.log")"))"
+elif grep -q "Creating sandbox" "$WORKDIR/restricted.log" || { [[ -n "$rsbx" ]] && printf '%s' "$after" | grep -qF "$rsbx"; }; then
+    fail "session with --allow-host api.github.com got as far as a sandbox ($rsbx)"
+else
+    pass "session with --allow-host api.github.com failed before creating a sandbox"
+fi
+
 # --- Session ---
+SESSION_ARGS=(${AGENT_ARGS[@]+"${AGENT_ARGS[@]}"})
+[[ "$REPO_POLICY" == true ]] && AGENT_ARGS+=(--allow-host "$POLICY_HOST")
 echo "Starting $HARNESS session on $REPO (waits for egress narrowing)..."
 start_session || exit 2
+AGENT_ARGS=(${SESSION_ARGS[@]+"${SESSION_ARGS[@]}"})
 echo "Sandbox: $SANDBOX"
+
+# Repository policy: the granted rule is loaded and read-only.
+if [[ "$REPO_POLICY" == true ]]; then
+    if grep -q "granted 1 host(s): $POLICY_HOST" "$S_LOG" &&
+        openshell policy get "$SANDBOX" --full -o json 2>&1 | grep -q "\"$POLICY_RULE\""; then
+        pass "--allow-host $POLICY_HOST: $POLICY_RULE loaded"
+    else
+        fail "--allow-host $POLICY_HOST: $POLICY_RULE not granted or not in the loaded policy"
+    fi
+    if [[ "$HARNESS" == opencode ]]; then
+        echo "SKIP   $POLICY_HOST GET/POST: opencode's repo rules bind the opencode binary, not node"
+    else
+        out="$(node_sh "curl -sS -m 20 -o /dev/null -w 'HTTP=%{http_code}\n' https://$POLICY_HOST/ || true")"
+        if printf '%s' "$out" | grep -qE 'HTTP=[23][0-9][0-9]'; then
+            pass "GET https://$POLICY_HOST/ (granted, read-only)"
+        else
+            fail "GET https://$POLICY_HOST/ ($(tail1 "$out"))"
+        fi
+        out="$(node_sh "curl -sS -m 20 -X POST -H 'Content-Type: application/json' -d '{}' https://$POLICY_HOST/ || true")"
+        if printf '%s' "$out" | grep -q 'policy_denied'; then
+            pass "POST https://$POLICY_HOST/ (refused by policy)"
+        else
+            fail "POST https://$POLICY_HOST/: not refused by policy ($(tail1 "$out"))"
+        fi
+    fi
+fi
 
 # Credentials: placeholders only, no App key material.
 for var in GH_TOKEN GITHUB_TOKEN; do

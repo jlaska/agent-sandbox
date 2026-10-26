@@ -479,6 +479,14 @@ session asks the harness for a reply through its real inference provider. The
 default target is the public fixture `jlaska/agent-sandbox-mise-fixture`, which
 has this repository's rulesets. Branches and the PR are removed on exit.
 
+The gate also checks repository policy on the fixture, whose
+`.agent-policy.yaml` requests `example.org` as optional. Before the session,
+`--explain-policy` must report that request omitted with a warning and must
+reject `--allow-host 169.254.169.254` and `--allow-host api.github.com`, and a
+real session with the latter must fail before creating a sandbox. The main
+session runs with `--allow-host example.org`, so `repo_example_org` must be
+loaded, a GET to it must succeed and a POST must be refused by policy.
+
 ```bash
 make workflow-gate                                                   # claude
 ./tests/workflow-gate.sh --harness pi -- --model gpt-6-luna
