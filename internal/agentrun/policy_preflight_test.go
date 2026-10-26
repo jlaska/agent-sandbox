@@ -216,10 +216,15 @@ func TestRunRequiredUngrantedFailsBeforeCreating(t *testing.T) {
 		f.manifest = docsManifest
 		var err error
 		out := captureStdout(t, func() { err = Run(flowConfig()) })
-		if err == nil || !strings.Contains(err.Error(), "requires docs.example.org") {
+		if err == nil || !strings.Contains(errors.Unwrap(err).Error(), "requires docs.example.org") {
 			t.Fatalf("err = %v", err)
 		}
 		onlyPreflightCommands(t, f)
+		// main prints the returned error after this output: each compile
+		// error must appear once across the two.
+		if all := out + "Error: " + err.Error(); strings.Count(all, "requires docs.example.org") != 1 {
+			t.Errorf("compile error not printed exactly once:\n%s", all)
+		}
 		for _, want := range []string{
 			"denied docs.example.org: required and not granted",
 			"ERROR: .agent-policy.yaml requires docs.example.org",
@@ -239,8 +244,13 @@ func TestRunRestrictedGrantFailsBeforeCreating(t *testing.T) {
 	runFlow(t, nil, func(f *flowMock) {
 		cfg := flowConfig()
 		cfg.AllowHosts = []string{"api.github.com"}
-		if err := Run(cfg); err == nil || !strings.Contains(err.Error(), "already governed by the baseline") {
+		var err error
+		out := captureStdout(t, func() { err = Run(cfg) })
+		if err == nil || !strings.Contains(errors.Unwrap(err).Error(), "already governed by the baseline") {
 			t.Fatalf("err = %v", err)
+		}
+		if all := out + "Error: " + err.Error(); strings.Count(all, "already governed by the baseline") != 1 {
+			t.Errorf("compile error not printed exactly once:\n%s", all)
 		}
 		onlyPreflightCommands(t, f)
 	})
@@ -498,6 +508,9 @@ func TestExplainPolicy(t *testing.T) {
 				out := captureStdout(t, func() { err = Run(cfg) })
 				if (err != nil) != tt.wantErr {
 					t.Fatalf("err = %v, wantErr %v", err, tt.wantErr)
+				}
+				if err != nil && strings.Count(out+"Error: "+err.Error(), ".agent-policy.yaml requires") != 1 {
+					t.Errorf("compile error not printed exactly once:\n%s\nError: %v", out, err)
 				}
 				if len(f.m.calls) != 0 {
 					t.Errorf("--explain-policy ran commands: %v", callStrings(f.m))
