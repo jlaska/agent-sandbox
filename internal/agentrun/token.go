@@ -12,6 +12,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -37,6 +38,10 @@ type TokenResult struct {
 	Token     string
 	ExpiresAt time.Time
 }
+
+// errRepoNotAccessible means the GitHub App installation cannot reach the
+// repository a token was requested for.
+var errRepoNotAccessible = errors.New("repository is not accessible via the GitHub App")
 
 // MintToken mints a repository-scoped GitHub App installation token.
 // The returned token is authorized only for the specified repository.
@@ -226,6 +231,11 @@ func mintInstallationToken(jwt, installationID, owner, repoName string) (*TokenR
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 
+	// GitHub answers 422 when the repository is not one the installation can
+	// reach (including a repo's old name after a rename).
+	if resp.StatusCode == http.StatusUnprocessableEntity {
+		return nil, fmt.Errorf("%w: %s/%s (HTTP 422): %s", errRepoNotAccessible, owner, repoName, redactTokenInResponse(string(respBody)))
+	}
 	if resp.StatusCode != http.StatusCreated {
 		return nil, fmt.Errorf("token minting failed (HTTP %d): %s", resp.StatusCode, redactTokenInResponse(string(respBody)))
 	}
@@ -245,14 +255,16 @@ func mintInstallationToken(jwt, installationID, owner, repoName string) (*TokenR
 		return nil, fmt.Errorf("API returned empty token")
 	}
 
-	// Validate that the token is scoped only to the requested repo.
+	// Validate that the token is scoped to exactly the requested repo. A
+	// response without the repositories list is not proof of scoping, so it
+	// fails closed too.
 	expectedRepo := owner + "/" + repoName
-	if len(result.Repos) > 0 {
-		for _, r := range result.Repos {
-			if r.FullName != expectedRepo {
-				return nil, fmt.Errorf("token scoped to unexpected repository %q (expected %q)", r.FullName, expectedRepo)
-			}
+	if len(result.Repos) != 1 || result.Repos[0].FullName != expectedRepo {
+		names := make([]string, len(result.Repos))
+		for i, r := range result.Repos {
+			names[i] = r.FullName
 		}
+		return nil, fmt.Errorf("token scoped to unexpected repositories %q (expected only %q)", names, expectedRepo)
 	}
 
 	expiresAt, _ := time.Parse(time.RFC3339, result.ExpiresAt)

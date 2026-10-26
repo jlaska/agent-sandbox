@@ -747,9 +747,14 @@ func TestVerifyNarrowedRejections(t *testing.T) {
 	}
 	// An empty/truncated rule set must not pass the "mise_bootstrap is gone" check vacuously.
 	for _, tt := range []struct{ name, body, wantErr string }{
-		{"missing network_policies", `{"version":3,"status":"effective","policy":{"version":1}}`, "no network_policies"},
-		{"empty network_policies", `{"version":3,"status":"effective","policy":{"network_policies":{}}}`, "no network_policies"},
-		{"always-present rule missing", `{"version":3,"status":"effective","policy":{"network_policies":{"other":{"name":"o"}}}}`, "github_git"},
+		{"missing network_policies", `{"version":3,"status":"effective","policy_source":"sandbox","policy":{"version":1}}`, "no network_policies"},
+		{"empty network_policies", `{"version":3,"status":"effective","policy_source":"sandbox","policy":{"network_policies":{}}}`, "no network_policies"},
+		{"always-present rule missing", `{"version":3,"status":"effective","policy_source":"sandbox","policy":{"network_policies":{"other":{"name":"o"}}}}`, "github_git"},
+		// A gateway-wide global policy replaces the repo-scoped one.
+		{"global policy source", `{"version":3,"status":"effective","policy_source":"global","policy":{"network_policies":{"github_git":{"name":"g"}}}}`, `source is "global"`},
+		{"missing policy source", `{"version":3,"status":"effective","policy":{"network_policies":{"github_git":{"name":"g"}}}}`, `source is ""`},
+		// A stale (pre-endpointless) profile on the gateway widens the policy.
+		{"provider rule with endpoints", `{"version":3,"status":"effective","policy_source":"sandbox","policy":{"network_policies":{"github_git":{"name":"g"},"_provider_a-claude-1-claude-code":{"name":"p","endpoints":[{"host":"sentry.io","port":443}]}}}}`, "_provider_a-claude-1-claude-code adds 1 endpoint"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			withMockExec(t, func(m *mockCmd) {

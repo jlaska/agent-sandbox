@@ -28,8 +28,8 @@ network layer — with credentials that self-destruct.
 |---|---|
 | GitHub App + rulesets | Agent can only push `agent/**` branches, create PRs, comment. Cannot push `main`, merge, or manipulate tags. |
 | L7 network policy | Per-binary enforcement: only `git`/`gh` can reach GitHub, and only for the target repo (branch deletes limited to `agent/**`); only the harness can reach inference endpoints, and no telemetry hosts are allowed (Claude Code runs with `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`). Provider profiles carry credentials only; the policy binds each session's providers to their hosts. Merge APIs blocked. Verified per rule by `make policy-matrix`. |
-| Token scope | Single-repo scoped, auto-expires (~1h), revoked on exit. |
-| Container isolation | Rootless container, default-deny network, read-only system paths. |
+| Token scope | Single-repo scoped (minting it is the access check; agent-run never mints an installation-wide token for a session), auto-expires (~1h), revoked on exit. |
+| Container isolation | Rootless container, default-deny network, read-only system paths enforced by Landlock (`hard_requirement`: the sandbox does not start without it). |
 | Dependency cooldown | Package versions published in the last 3 days are not installed (npm, uv, mise). |
 
 ## Installation
@@ -160,8 +160,11 @@ left behind: `openshell provider list --label-selector agent-run.session=<sessio
 Two modes, auto-detected:
 
 - **App mode** (default): Uses a GitHub App installation token minted from a
-  private key stored in macOS Keychain. Repos are auto-discovered from the App
-  installation. Tokens are revoked on exit.
+  private key stored in macOS Keychain. The token is scoped to the target repo;
+  GitHub refuses to mint it for a repo the App cannot reach (give a renamed repo
+  by its current name). Tokens are revoked on exit. `--list-repos` uses a
+  short-lived installation-wide token to list the App's repos and revokes it
+  right away.
 - **PAT mode**: Pass a Personal Access Token via `--github-token` or
   `GITHUB_TOKEN` env var. No App required. L7 sandbox policy still constrains
   operations.
@@ -266,7 +269,9 @@ The install runs under a temporary `mise_bootstrap` network rule that allows
 read-only access to the tool registries (GitHub releases, mise, PyPI, npm,
 dl.k8s.io, get.helm.sh and similar). The rule is **always removed before the
 agent starts**, even when mise is skipped. If the removal cannot be verified,
-`agent-run` deletes the sandbox, revokes the token and exits non-zero. If a tool
+or the effective policy is not the sandbox's own (a gateway-wide global
+policy) or a provider profile adds endpoints to it, `agent-run` deletes the
+sandbox, revokes the token and exits non-zero. If a tool
 needs another host (for example `nodejs.org` for node), allow it:
 
 ```bash

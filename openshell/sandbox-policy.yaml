@@ -15,8 +15,11 @@ filesystem_policy:
     - /dev/null
     - /sandbox
 
+# hard_requirement: the sandbox fails to start if the kernel lacks Landlock or
+# a path above cannot be restricted, instead of running with filesystem
+# isolation silently degraded (best_effort only logs a warning).
 landlock:
-  compatibility: best_effort
+  compatibility: hard_requirement
 
 network_policies:
 

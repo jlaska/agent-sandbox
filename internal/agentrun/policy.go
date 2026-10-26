@@ -324,17 +324,26 @@ func printPolicyHistory(ctx context.Context, sandboxName string) {
 // Effective view: {"scope","sandbox","version","active_version","hash",
 // "status":"effective","policy":{"network_policies":{<key>:{"name":...}}}}.
 // Revision view (--rev N): same keys, but "status" is the revision state
-// (pending|loaded|failed|superseded) and "load_error" may be set.
+// (pending|loaded|failed|superseded) and "load_error" may be set. The
+// effective view also has "policy_source" ("sandbox", or "global" when a
+// gateway-wide policy replaces the sandbox's own) and, with --full, the
+// `_provider_*` rules composed from provider profiles.
 type policyGetDoc struct {
-	Version   uint32 `json:"version"`
-	Status    string `json:"status"`
-	LoadError string `json:"load_error"`
-	Policy    *struct {
+	Version      uint32 `json:"version"`
+	Status       string `json:"status"`
+	LoadError    string `json:"load_error"`
+	PolicySource string `json:"policy_source"`
+	Policy       *struct {
 		NetworkPolicies map[string]struct {
-			Name string `json:"name"`
+			Name      string            `json:"name"`
+			Endpoints []json.RawMessage `json:"endpoints"`
 		} `json:"network_policies"`
 	} `json:"policy"`
 }
+
+// providerRulePrefix is the key prefix OpenShell gives the rules it composes
+// from provider profiles (openshell-policy compose.rs PROVIDER_RULE_NAME_PREFIX).
+const providerRulePrefix = "_provider_"
 
 // extractJSONObject returns the outermost {...} in out, tolerating stderr
 // noise captured alongside the JSON.
@@ -359,13 +368,20 @@ func getPolicyDoc(ctx context.Context, args ...string) (*policyGetDoc, error) {
 }
 
 // verifyNarrowed checks, via two `policy get` calls, that (1) the effective
-// policy no longer contains mise_bootstrap and (2) the latest revision (the
-// effective version) has status loaded. `--wait` alone is not enough: it also
-// exits 0 for "unchanged" and "superseded". Returns the verified revision.
+// policy is the sandbox's own (not a gateway-wide global policy, which would
+// drop the repo scoping), (2) it no longer contains mise_bootstrap, (3) no
+// provider profile added endpoints (agent-run's profiles are endpointless, so
+// any `_provider_*` endpoint is a stale or foreign profile widening the
+// policy), and (4) the latest revision (the effective version) has status
+// loaded. `--wait` alone is not enough: it also exits 0 for "unchanged" and
+// "superseded". Returns the verified revision.
 func verifyNarrowed(ctx context.Context, sandboxName string) (uint32, error) {
 	eff, err := getPolicyDoc(ctx, sandboxName, "--full", "-o", "json")
 	if err != nil {
 		return 0, err
+	}
+	if eff.PolicySource != "sandbox" {
+		return 0, fmt.Errorf("verification failed: effective policy source is %q, not the sandbox's own policy (a gateway-wide global policy replaces the repo-scoped one)", eff.PolicySource)
 	}
 	if eff.Policy == nil {
 		return 0, fmt.Errorf("verification failed: policy get returned no policy payload")
@@ -381,6 +397,9 @@ func verifyNarrowed(ctx context.Context, sandboxName string) (uint32, error) {
 	for key, rule := range eff.Policy.NetworkPolicies {
 		if key == miseBootstrapRule || rule.Name == miseBootstrapRule || rule.Name == "mise-bootstrap" {
 			return 0, fmt.Errorf("verification failed: %s rule is still present in the effective policy", miseBootstrapRule)
+		}
+		if strings.HasPrefix(key, providerRulePrefix) && len(rule.Endpoints) > 0 {
+			return 0, fmt.Errorf("verification failed: provider rule %s adds %d endpoint(s) to the policy; its profile must be endpointless (stop running sessions and rerun so agent-run can update it)", key, len(rule.Endpoints))
 		}
 	}
 	if eff.Version == 0 {

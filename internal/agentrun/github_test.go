@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -25,9 +26,16 @@ func TestListAppRepos(t *testing.T) {
 		return "", nil
 	}
 
-	// Mock that handles both the token mint POST and the repo listing GET.
+	// Mock that handles the token mint POST, the repo listing GET and the
+	// token revoke DELETE (recorded in revoked).
+	var revoked []string
 	listMock := func(repoJSON string) func(*http.Request) (*http.Response, error) {
+		revoked = nil
 		return func(req *http.Request) (*http.Response, error) {
+			if req.Method == "DELETE" && req.URL.Path == "/installation/token" {
+				revoked = append(revoked, req.Header.Get("Authorization"))
+				return &http.Response{StatusCode: 204, Body: io.NopCloser(strings.NewReader(""))}, nil
+			}
 			if req.Method == "POST" && strings.Contains(req.URL.Path, "/access_tokens") {
 				return &http.Response{
 					StatusCode: 201,
@@ -63,6 +71,11 @@ func TestListAppRepos(t *testing.T) {
 		if repos[1] != "jlaska/homelab" {
 			t.Errorf("repos[1] = %q, want jlaska/homelab", repos[1])
 		}
+		// The listing token reaches every repo on the installation, so it
+		// must not outlive the listing.
+		if want := []string{"Bearer ghs_list_token"}; !slices.Equal(revoked, want) {
+			t.Errorf("revoked = %v, want %v", revoked, want)
+		}
 	})
 
 	t.Run("API error", func(t *testing.T) {
@@ -88,57 +101,6 @@ func TestListAppRepos(t *testing.T) {
 		}
 		if len(repos) != 0 {
 			t.Errorf("expected 0 repos, got %d", len(repos))
-		}
-	})
-}
-
-func TestIsAppRepoAccessible(t *testing.T) {
-	origHTTP := httpDo
-	origOutput := execCmdOutputFn
-	defer func() {
-		httpDo = origHTTP
-		execCmdOutputFn = origOutput
-	}()
-
-	_, keyPEM := testRSAKey(t)
-	execCmdOutputFn = func(_ context.Context, name string, args ...string) (string, error) {
-		if name == "security" {
-			return string(keyPEM), nil
-		}
-		return "", nil
-	}
-
-	httpDo = func(req *http.Request) (*http.Response, error) {
-		if req.Method == "POST" && strings.Contains(req.URL.Path, "/access_tokens") {
-			return &http.Response{
-				StatusCode: 201,
-				Body:       io.NopCloser(strings.NewReader(`{"token":"ghs_list"}`)),
-			}, nil
-		}
-		resp := `{"repositories":[{"full_name":"jlaska/agent-sandbox"},{"full_name":"jlaska/homelab"}]}`
-		return &http.Response{
-			StatusCode: 200,
-			Body:       io.NopCloser(strings.NewReader(resp)),
-		}, nil
-	}
-
-	t.Run("accessible repo", func(t *testing.T) {
-		ok, err := IsAppRepoAccessible("jlaska/agent-sandbox")
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if !ok {
-			t.Error("expected repo to be accessible")
-		}
-	})
-
-	t.Run("inaccessible repo", func(t *testing.T) {
-		ok, err := IsAppRepoAccessible("jlaska/unknown")
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if ok {
-			t.Error("expected repo to be inaccessible")
 		}
 	})
 }
@@ -244,6 +206,42 @@ func TestResolveGitHubCredential(t *testing.T) {
 		}
 		if !cred.Revocable() {
 			t.Error("App token should be revocable")
+		}
+	})
+
+	t.Run("App mode, repo not accessible", func(t *testing.T) {
+		origSilent := execCmdSilentFn
+		origOutput := execCmdOutputFn
+		origHTTP := httpDo
+		defer func() {
+			execCmdSilentFn = origSilent
+			execCmdOutputFn = origOutput
+			httpDo = origHTTP
+		}()
+		t.Setenv("GITHUB_TOKEN", "")
+		_, keyPEM := testRSAKey(t)
+		execCmdSilentFn = func(context.Context, string, ...string) error { return nil }
+		execCmdOutputFn = func(_ context.Context, name string, _ ...string) (string, error) {
+			if name == "security" {
+				return string(keyPEM), nil
+			}
+			return "", nil
+		}
+		calls := 0
+		httpDo = func(req *http.Request) (*http.Response, error) {
+			calls++
+			return &http.Response{
+				StatusCode: 422,
+				Body:       io.NopCloser(strings.NewReader(`{"message":"There is at least one repository that does not exist or is not accessible to the parent installation."}`)),
+			}, nil
+		}
+		_, err := ResolveGitHubCredential(&Config{Repo: "jlaska/agent-sandbox-test"})
+		if err == nil || !strings.Contains(err.Error(), `"jlaska/agent-sandbox-test" is not accessible via the GitHub App`) || !strings.Contains(err.Error(), "--list-repos") {
+			t.Errorf("err = %v, want an actionable not-accessible error", err)
+		}
+		// One scoped mint is the whole access check: no installation-wide token.
+		if calls != 1 {
+			t.Errorf("%d GitHub API calls, want 1", calls)
 		}
 	})
 

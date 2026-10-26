@@ -214,18 +214,6 @@ func run(ctx context.Context, cfg *Config) error {
 	}
 	fmt.Println()
 
-	// In App mode, verify the repo is accessible via the App installation.
-	// In PAT mode, trust the user (L7 policy still constrains operations).
-	if cred.Mode == GitHubModeApp {
-		accessible, err := IsAppRepoAccessible(cfg.Repo)
-		if err != nil {
-			return fmt.Errorf("failed to verify repo access: %w", err)
-		}
-		if !accessible {
-			return fmt.Errorf("repository %q is not accessible via the GitHub App; use --list-repos to see available repos", cfg.Repo)
-		}
-	}
-
 	// Step 3: Ensure provider profiles are imported (0.1.4 has no built-ins)
 	fmt.Println("[agent-run] Ensuring provider profiles...")
 	if err := ensureProfiles(ctx, harness.Providers(opts)); err != nil {

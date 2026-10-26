@@ -5,6 +5,7 @@
   "active_version": 3,
   "hash": "abc123",
   "status": "effective",
+  "policy_source": "sandbox",
   "policy": {
     "version": 1,
     "network_policies": {
