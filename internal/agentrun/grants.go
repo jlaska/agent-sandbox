@@ -168,7 +168,13 @@ func (g *Grant) validate() error {
 		errs = append(errs, fmt.Errorf("paths: duplicate entries"))
 	}
 	if err := errors.Join(errs...); err != nil {
-		return fmt.Errorf("%s (host %q): %w", g.Source, g.Host, err)
+		// A grants file entry is named by index, so add its host; an
+		// --allow-host source already names it.
+		where := g.Source
+		if !strings.HasSuffix(strings.ToLower(where), " "+strings.ToLower(g.Host)) {
+			where = fmt.Sprintf("%s (host %q)", where, g.Host)
+		}
+		return fmt.Errorf("%s: %w", where, err)
 	}
 	return nil
 }
