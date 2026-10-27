@@ -270,7 +270,7 @@ func explainPolicy(ctx context.Context, cfg *Config, opts HarnessOptions, grants
 			}
 		}()
 	}
-	pf, err := runPolicyPreflight(ctx, cfg, cred.Token, sessionProviders(session, harness.Providers(opts)), grants)
+	pf, err := runPolicyPreflight(ctx, cfg, cred.Token, harnessSessionProviders(session, harness, opts), grants)
 	if pf != nil {
 		pf.printExplain(os.Stdout, err)
 	}

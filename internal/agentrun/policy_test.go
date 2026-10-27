@@ -460,11 +460,13 @@ const (
 // one, and nothing else binds any provider. All provider profiles are
 // endpointless, so these bindings are the only place credentials resolve.
 func TestSessionPolicyBindings(t *testing.T) {
+	t.Setenv("ANTHROPIC_BASE_URL", "")
 	for _, tc := range []struct {
 		harness string
 		opts    HarnessOptions
 	}{
 		{HarnessClaude, HarnessOptions{}},
+		{HarnessClaude, HarnessOptions{ExplicitEnv: []string{"ANTHROPIC_BASE_URL=https://" + liteLLMHost}}},
 		{HarnessPi, HarnessOptions{}},
 		{HarnessOpencode, HarnessOptions{Backend: inferenceLiteLLM}},
 		{HarnessOpencode, HarnessOptions{Backend: inferenceAnthropic}},
@@ -474,7 +476,7 @@ func TestSessionPolicyBindings(t *testing.T) {
 			t.Fatal(err)
 		}
 		profiles := h.Providers(tc.opts)
-		sp := sessionProviders("a-claude-5a717a7c", profiles)
+		sp := harnessSessionProviders("a-claude-5a717a7c", h, tc.opts)
 		if sp.AnthropicProvider == "" && sp.LiteLLMProvider == "" {
 			t.Errorf("%s %v: no inference provider bound", tc.harness, profiles)
 		}
@@ -509,6 +511,39 @@ func TestSessionPolicyBindings(t *testing.T) {
 			if inf != "" && bound[inf] < 2 { // the claude/node rule and the opencode rule
 				t.Errorf("%s: only %d endpoints bind %s; want at least 2", tc.harness, bound[inf], inf)
 			}
+		}
+	}
+}
+
+// Claude's credential is bound to the one inference host ANTHROPIC_BASE_URL
+// sends it to: api.anthropic.com unless the base URL names another host.
+func TestClaudeProviderBinding(t *testing.T) {
+	h, err := LookupHarness(HarnessClaude)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const name = "s1-claude-code"
+	for _, tc := range []struct {
+		hostEnv, explicit          string
+		wantAnthropic, wantLiteLLM string
+	}{
+		{"", "", name, ""},
+		{"https://api.anthropic.com", "", name, ""},
+		{"https://API.anthropic.com/", "", name, ""},
+		{"https://" + liteLLMHost, "", "", name},
+		{"", "ANTHROPIC_BASE_URL=https://" + liteLLMHost + "/", "", name},
+		{"https://" + liteLLMHost, "ANTHROPIC_BASE_URL=https://api.anthropic.com", name, ""},
+		{"not a url", "", name, ""},
+	} {
+		t.Setenv("ANTHROPIC_BASE_URL", tc.hostEnv)
+		var opts HarnessOptions
+		if tc.explicit != "" {
+			opts.ExplicitEnv = []string{tc.explicit}
+		}
+		sp := harnessSessionProviders("s1", h, opts)
+		if sp.AnthropicProvider != tc.wantAnthropic || sp.LiteLLMProvider != tc.wantLiteLLM {
+			t.Errorf("env %q explicit %q: anthropic=%q litellm=%q, want %q %q", tc.hostEnv, tc.explicit,
+				sp.AnthropicProvider, sp.LiteLLMProvider, tc.wantAnthropic, tc.wantLiteLLM)
 		}
 	}
 }
