@@ -162,6 +162,34 @@ func GenerateSessionPolicy(repo string, p SessionProviders, miseHosts []string) 
 
 // generatePolicyFrom renders tmpl for repo and writes it to a temp file.
 func generatePolicyFrom(repo string, tmpl []byte, p SessionProviders, miseHosts []string) (string, error) {
+	result, err := renderBaselinePolicy(repo, tmpl, p, miseHosts)
+	if err != nil {
+		return "", err
+	}
+
+	// Write to temp file
+	tmpfile, err := os.CreateTemp("", "agent-run-policy.*.yaml")
+	if err != nil {
+		return "", fmt.Errorf("failed to create temp policy file: %w", err)
+	}
+
+	if _, err := tmpfile.WriteString(result); err != nil {
+		_ = tmpfile.Close()
+		_ = os.Remove(tmpfile.Name())
+		return "", fmt.Errorf("failed to write policy file: %w", err)
+	}
+
+	if err := tmpfile.Close(); err != nil {
+		_ = os.Remove(tmpfile.Name())
+		return "", err
+	}
+
+	return tmpfile.Name(), nil
+}
+
+// renderBaselinePolicy renders tmpl for repo and validates the result, without
+// writing it anywhere. It is the baseline that CompilePolicy extends.
+func renderBaselinePolicy(repo string, tmpl []byte, p SessionProviders, miseHosts []string) (string, error) {
 	owner, name, err := ParseRepo(repo)
 	if err != nil {
 		return "", fmt.Errorf("invalid repository: %w", err)
@@ -197,25 +225,7 @@ func generatePolicyFrom(repo string, tmpl []byte, p SessionProviders, miseHosts 
 	if err := yaml.Unmarshal([]byte(result), &doc); err != nil {
 		return "", fmt.Errorf("generated policy is not valid YAML: %w", err)
 	}
-
-	// Write to temp file
-	tmpfile, err := os.CreateTemp("", "agent-run-policy.*.yaml")
-	if err != nil {
-		return "", fmt.Errorf("failed to create temp policy file: %w", err)
-	}
-
-	if _, err := tmpfile.WriteString(result); err != nil {
-		_ = tmpfile.Close()
-		_ = os.Remove(tmpfile.Name())
-		return "", fmt.Errorf("failed to write policy file: %w", err)
-	}
-
-	if err := tmpfile.Close(); err != nil {
-		_ = os.Remove(tmpfile.Name())
-		return "", err
-	}
-
-	return tmpfile.Name(), nil
+	return result, nil
 }
 
 // renderPolicy executes the policy template.
