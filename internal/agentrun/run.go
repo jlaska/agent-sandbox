@@ -227,7 +227,7 @@ func run(ctx context.Context, cfg *Config) error {
 	// .agent-policy.yaml and compile the session policy. Any rejection fails
 	// here, before a profile, provider, cache or sandbox exists.
 	fmt.Println("[agent-run] Resolving repository policy...")
-	providers := sessionProviders(sandboxName, harness.Providers(opts))
+	providers := harnessSessionProviders(sandboxName, harness, opts)
 	preflight, err := runPolicyPreflight(ctx, cfg, cred.Token, providers, grants)
 	if preflight != nil {
 		preflight.printSession(err != nil)

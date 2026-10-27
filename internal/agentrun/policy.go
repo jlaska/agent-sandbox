@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"regexp"
 	"strconv"
@@ -84,6 +85,31 @@ func sessionProviders(session string, inferenceProfiles []string) SessionProvide
 		}
 	}
 	return p
+}
+
+// harnessSessionProviders returns the provider instances a session of
+// harness attaches, bound where the harness sends each credential. Claude's
+// claude-code provider serves api.anthropic.com by default; when
+// ANTHROPIC_BASE_URL points elsewhere, claude sends that key to the LiteLLM
+// proxy (the only other inference host in the policy), so the provider is
+// bound there instead and never to both.
+func harnessSessionProviders(session string, h *Harness, o HarnessOptions) SessionProviders {
+	p := sessionProviders(session, h.Providers(o))
+	if h.Name == HarnessClaude && claudeUsesProxy(o) {
+		p.LiteLLMProvider, p.AnthropicProvider = p.AnthropicProvider, ""
+	}
+	return p
+}
+
+// claudeUsesProxy reports whether claude's ANTHROPIC_BASE_URL (--env, else
+// the host environment) names a host other than api.anthropic.com.
+func claudeUsesProxy(o HarnessOptions) bool {
+	v := resolveCredential("ANTHROPIC_BASE_URL", o.ExplicitEnv)
+	if v == "" {
+		return false
+	}
+	u, err := url.Parse(v)
+	return err == nil && u.Hostname() != "" && !strings.EqualFold(u.Hostname(), "api.anthropic.com")
 }
 
 // validate checks every provider name against providerNameRE, so none can
