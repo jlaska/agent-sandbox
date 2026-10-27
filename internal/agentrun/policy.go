@@ -166,14 +166,18 @@ func generatePolicyFrom(repo string, tmpl []byte, p SessionProviders, miseHosts 
 	if err != nil {
 		return "", err
 	}
+	return writePolicyFile(result)
+}
 
-	// Write to temp file
+// writePolicyFile writes policy to a new temp file (mode 0600, from
+// os.CreateTemp) and returns its path. The caller removes it.
+func writePolicyFile(policy string) (string, error) {
 	tmpfile, err := os.CreateTemp("", "agent-run-policy.*.yaml")
 	if err != nil {
 		return "", fmt.Errorf("failed to create temp policy file: %w", err)
 	}
 
-	if _, err := tmpfile.WriteString(result); err != nil {
+	if _, err := tmpfile.WriteString(policy); err != nil {
 		_ = tmpfile.Close()
 		_ = os.Remove(tmpfile.Name())
 		return "", fmt.Errorf("failed to write policy file: %w", err)
@@ -257,13 +261,13 @@ var revokeTokenFn = RevokeToken
 // gone and the resulting revision is Loaded. It runs even when mise was skipped
 // (the rule is always present at create time) and returns an error on any
 // failure; callers must treat that as fatal (see enforceNarrowing).
-func narrowPolicy(ctx context.Context, _ *Config, sandboxName string) error {
+func narrowPolicy(ctx context.Context, _ *Config, sandboxName string, repoRules map[string]string) error {
 	fmt.Printf("[agent-run] Narrowing egress: removing %s rule...\n", miseBootstrapRule)
 	if err := execCmd(ctx, "openshell", "policy", "update", sandboxName,
 		"--remove-rule", miseBootstrapRule, "--wait"); err != nil {
 		return fmt.Errorf("failed to remove %s rule: %w", miseBootstrapRule, err)
 	}
-	version, err := verifyNarrowed(ctx, sandboxName)
+	version, err := verifyNarrowed(ctx, sandboxName, repoRules)
 	if err != nil {
 		return err
 	}
@@ -285,9 +289,9 @@ type narrowOutcome struct {
 // egress. The sandbox's policy revisions are printed first (they die with the
 // sandbox). The error states truthfully whether the delete succeeded; when it
 // did not, the caller's deferred cleanup retries it.
-func enforceNarrowing(ctx context.Context, cfg *Config, sandboxName string, cred *GitHubCredential) (narrowOutcome, error) {
+func enforceNarrowing(ctx context.Context, cfg *Config, sandboxName string, cred *GitHubCredential, repoRules map[string]string) (narrowOutcome, error) {
 	var out narrowOutcome
-	err := narrowPolicy(ctx, cfg, sandboxName)
+	err := narrowPolicy(ctx, cfg, sandboxName, repoRules)
 	if err == nil {
 		return out, nil
 	}
@@ -382,10 +386,12 @@ func getPolicyDoc(ctx context.Context, args ...string) (*policyGetDoc, error) {
 // drop the repo scoping), (2) it no longer contains mise_bootstrap, (3) no
 // provider profile added endpoints (agent-run's profiles are endpointless, so
 // any `_provider_*` endpoint is a stale or foreign profile widening the
-// policy), and (4) the latest revision (the effective version) has status
+// policy), (4) its repo_* rules are exactly repoRules (rule key -> host, the
+// rules the preflight granted): none missing, none extra, each only for its
+// host, and (5) the latest revision (the effective version) has status
 // loaded. `--wait` alone is not enough: it also exits 0 for "unchanged" and
 // "superseded". Returns the verified revision.
-func verifyNarrowed(ctx context.Context, sandboxName string) (uint32, error) {
+func verifyNarrowed(ctx context.Context, sandboxName string, repoRules map[string]string) (uint32, error) {
 	eff, err := getPolicyDoc(ctx, sandboxName, "--full", "-o", "json")
 	if err != nil {
 		return 0, err
@@ -410,6 +416,28 @@ func verifyNarrowed(ctx context.Context, sandboxName string) (uint32, error) {
 		}
 		if strings.HasPrefix(key, providerRulePrefix) && len(rule.Endpoints) > 0 {
 			return 0, fmt.Errorf("verification failed: provider rule %s adds %d endpoint(s) to the policy; its profile must be endpointless (stop running sessions and rerun so agent-run can update it)", key, len(rule.Endpoints))
+		}
+		if strings.HasPrefix(key, repoRulePrefix) || strings.HasPrefix(rule.Name, repoRulePrefix) {
+			if _, ok := repoRules[key]; !ok {
+				return 0, fmt.Errorf("verification failed: effective policy has repo rule %s, which the preflight did not grant", key)
+			}
+		}
+	}
+	for key, host := range repoRules {
+		rule, ok := eff.Policy.NetworkPolicies[key]
+		if !ok {
+			return 0, fmt.Errorf("verification failed: granted repo rule %s (%s) is missing from the effective policy", key, host)
+		}
+		if len(rule.Endpoints) == 0 {
+			return 0, fmt.Errorf("verification failed: repo rule %s has no endpoints", key)
+		}
+		for _, raw := range rule.Endpoints {
+			var ep struct {
+				Host string `json:"host"`
+			}
+			if err := json.Unmarshal(raw, &ep); err != nil || !strings.EqualFold(ep.Host, host) {
+				return 0, fmt.Errorf("verification failed: repo rule %s has an endpoint for %q, want only %s", key, ep.Host, host)
+			}
 		}
 	}
 	if eff.Version == 0 {

@@ -1,6 +1,7 @@
 package agentrun
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
@@ -332,6 +333,36 @@ func TestParseArgsNewFlags(t *testing.T) {
 				t.Errorf("expected error for %v", extra)
 			}
 		})
+	}
+}
+
+func TestParseArgsPolicyFlags(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "sk-test")
+	cfg, err := ParseArgs([]string{"--allow-host", "docs.example.org", "jlaska/agent-sandbox", "claude",
+		"--allow-host", "api.example.org", "--grants", "/tmp/grants.yaml", "--no-repo-policy", "--explain-policy"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !slices.Equal(cfg.AllowHosts, []string{"docs.example.org", "api.example.org"}) || cfg.GrantsFile != "/tmp/grants.yaml" ||
+		!cfg.NoRepoPolicy || !cfg.ExplainPolicy || cfg.Repo != "jlaska/agent-sandbox" || cfg.Harness != "claude" {
+		t.Errorf("unexpected config: %+v", cfg)
+	}
+	for _, h := range []string{"https://docs.example.org", "docs.example.org:8443", "*.example.org", "10.0.0.1", ""} {
+		if _, err := ParseArgs([]string{"jlaska/agent-sandbox", "claude", "--allow-host", h}); err == nil {
+			t.Errorf("--allow-host %q: expected error", h)
+		}
+	}
+	// --generate-policy keeps printing the baseline policy only.
+	for _, extra := range [][]string{
+		{"--allow-host", "docs.example.org"}, {"--grants", "g.yaml"}, {"--no-repo-policy"}, {"--explain-policy"},
+	} {
+		if _, err := ParseArgs(append([]string{"--generate-policy", "jlaska/agent-sandbox"}, extra...)); err == nil ||
+			!strings.Contains(err.Error(), "baseline policy only") {
+			t.Errorf("--generate-policy %v: err = %v", extra, err)
+		}
+	}
+	if cfg, err := ParseArgs([]string{"--generate-policy", "jlaska/agent-sandbox", "--mise-allow-host", "nodejs.org"}); err != nil || !cfg.GeneratePolicy {
+		t.Errorf("--generate-policy: cfg=%+v err=%v", cfg, err)
 	}
 }
 

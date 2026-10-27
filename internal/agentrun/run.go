@@ -96,6 +96,15 @@ func run(ctx context.Context, cfg *Config) error {
 	if err != nil {
 		return err
 	}
+	// Caller grants (--allow-host, --grants) are local input: a malformed one
+	// fails before a token is minted.
+	grants, err := loadCallerGrants(cfg)
+	if err != nil {
+		return err
+	}
+	if cfg.ExplainPolicy {
+		return explainPolicy(ctx, cfg, opts, grants)
+	}
 
 	// State for cleanup
 	var (
@@ -203,7 +212,7 @@ func run(ctx context.Context, cfg *Config) error {
 
 	// Resolve GitHub credentials
 	fmt.Printf("[agent-run] Resolving GitHub credentials...\n")
-	cred, err := ResolveGitHubCredential(cfg)
+	cred, err := resolveGitHubCredentialFn(cfg)
 	if err != nil {
 		return fmt.Errorf("GitHub auth failed: %w", err)
 	}
@@ -213,6 +222,23 @@ func run(ctx context.Context, cfg *Config) error {
 		fmt.Printf(" (expires %s)", cred.ExpiresAt.Format(time.RFC3339))
 	}
 	fmt.Println()
+
+	// Step 2b: Policy preflight. Pin the default branch to a commit, read its
+	// .agent-policy.yaml and compile the session policy. Any rejection fails
+	// here, before a profile, provider, cache or sandbox exists.
+	fmt.Println("[agent-run] Resolving repository policy...")
+	providers := sessionProviders(sandboxName, harness.Providers(opts))
+	preflight, err := runPolicyPreflight(ctx, cfg, cred.Token, providers, grants)
+	if preflight != nil {
+		preflight.printSession(err != nil)
+	}
+	if err != nil {
+		return err
+	}
+
+	if err := interrupted(); err != nil {
+		return err
+	}
 
 	// Step 3: Ensure provider profiles are imported (0.1.4 has no built-ins)
 	fmt.Println("[agent-run] Ensuring provider profiles...")
@@ -255,11 +281,11 @@ func run(ctx context.Context, cfg *Config) error {
 		return err
 	}
 
-	// Step 5: Generate repo-specific policy
-	fmt.Printf("[agent-run] Generating sandbox policy for %s...\n", cfg.Repo)
-	policyTmp, err := GenerateSessionPolicy(cfg.Repo, sessionProviders(sandboxName, harness.Providers(opts)), cfg.MiseAllowHosts)
+	// Step 5: Write the policy compiled by the preflight
+	fmt.Printf("[agent-run] Writing sandbox policy for %s...\n", cfg.Repo)
+	policyTmp, err := writePolicyFile(preflight.Result.PolicyYAML)
 	if err != nil {
-		return fmt.Errorf("failed to generate policy: %w", err)
+		return fmt.Errorf("failed to write policy: %w", err)
 	}
 	defer func() { _ = os.Remove(policyTmp) }()
 
@@ -328,6 +354,11 @@ func run(ctx context.Context, cfg *Config) error {
 		"git", "clone", fmt.Sprintf("https://github.com/%s.git", cfg.Repo), "/sandbox/repo"); err != nil {
 		return fmt.Errorf("clone failed: %w", err)
 	}
+	// Work at exactly the commit whose manifest was compiled, even if the
+	// branch moved since the preflight.
+	if err := pinClone(ctx, sandboxName, preflight.DefaultBranch, preflight.SHA); err != nil {
+		return fmt.Errorf("clone failed: %w", err)
+	}
 
 	if err := interrupted(); err != nil {
 		return err
@@ -361,7 +392,7 @@ func run(ctx context.Context, cfg *Config) error {
 
 	// Step 11: Narrow egress before the agent starts. Fails closed: on error
 	// the sandbox is deleted and the token revoked before returning.
-	res, err := enforceNarrowing(ctx, cfg, sandboxName, ghCred)
+	res, err := enforceNarrowing(ctx, cfg, sandboxName, ghCred, preflight.repoRules())
 	if err != nil {
 		// Skip in the deferred cleanup only what enforceNarrowing really did;
 		// a failed sandbox delete is retried there.

@@ -3,6 +3,8 @@ package agentrun
 import (
 	"context"
 	"errors"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
@@ -30,6 +32,47 @@ type flowMock struct {
 	// execs records each execCmd/execCmdSilent/execInteractive call with the
 	// context it ran under.
 	execs []execRecord
+	// The fake GitHub API the preflight talks to (see fakeGitHub): manifest
+	// is the repo's .agent-policy.yaml ("" = none, a 404), head is what
+	// `git rev-parse HEAD` reports in the clone (default flowSHA), and
+	// httpReqs records each request as "METHOD path".
+	manifest string
+	head     string
+	httpReqs []string
+	// effective, when set, replaces the `policy get --full` fixture.
+	effective string
+	// github, when set, replaces the fake GitHub API.
+	github func(req *http.Request) (*http.Response, error)
+}
+
+// flowSHA is the commit the fake GitHub API reports for the default branch.
+const flowSHA = "0123456789abcdef0123456789abcdef01234567"
+
+func httpResponse(status int, body string) *http.Response {
+	return &http.Response{StatusCode: status, ContentLength: int64(len(body)), Body: io.NopCloser(strings.NewReader(body))}
+}
+
+// fakeGitHub serves the preflight's GitHub API calls: main at flowSHA and
+// f.manifest (or a 404) as the repo's .agent-policy.yaml.
+func (f *flowMock) fakeGitHub(req *http.Request) (*http.Response, error) {
+	f.httpReqs = append(f.httpReqs, req.Method+" "+req.URL.RequestURI())
+	if f.github != nil {
+		return f.github(req)
+	}
+	switch p := req.URL.Path; {
+	case req.Method == http.MethodDelete && p == "/installation/token":
+		return httpResponse(http.StatusNoContent, ""), nil
+	case p == "/repos/jlaska/agent-sandbox":
+		return httpResponse(http.StatusOK, `{"default_branch":"main"}`), nil
+	case p == "/repos/jlaska/agent-sandbox/git/ref/heads/main":
+		return httpResponse(http.StatusOK, `{"ref":"refs/heads/main","object":{"sha":"`+flowSHA+`","type":"commit"}}`), nil
+	case p == "/repos/jlaska/agent-sandbox/contents/"+AgentPolicyFile && req.URL.Query().Get("ref") == flowSHA:
+		if f.manifest == "" {
+			return httpResponse(http.StatusNotFound, `{"message":"Not Found"}`), nil
+		}
+		return httpResponse(http.StatusOK, f.manifest), nil
+	}
+	return httpResponse(http.StatusInternalServerError, `{"message":"unexpected request"}`), nil
 }
 
 type execRecord struct {
@@ -61,11 +104,19 @@ func runFlow(t *testing.T, onExec func(joined string) (bool, error), fn func(f *
 
 	withMockExec(t, func(m *mockCmd) {
 		f := &flowMock{m: m, onExec: onExec}
+		origHTTP, origBase := httpDo, githubAPIBase
+		httpDo, githubAPIBase = f.fakeGitHub, "https://api.github.test"
+		defer func() { httpDo, githubAPIBase = origHTTP, origBase }()
 		m.execOutput = func(_ string, args ...string) (string, error) {
 			joined := strings.Join(args, " ")
 			switch {
 			case joined == "--version":
 				return "openshell 0.1.4\n", nil
+			case strings.HasSuffix(joined, "git -C /sandbox/repo rev-parse HEAD"):
+				if f.head != "" {
+					return f.head + "\n", nil
+				}
+				return flowSHA + "\n", nil
 			case strings.Contains(joined, "list-profiles"):
 				return "[]", nil
 			case f.sbName != "" && joined == "sandbox get "+f.sbName+" -o json":
@@ -85,6 +136,9 @@ func runFlow(t *testing.T, onExec func(joined string) (bool, error), fn func(f *
 				}
 				return "✓ Deleted provider", nil
 			case strings.Contains(joined, "policy get") && strings.Contains(joined, "--full"):
+				if f.effective != "" {
+					return f.effective, nil
+				}
 				return eff, nil
 			case strings.Contains(joined, "policy get") && strings.Contains(joined, "--rev 3"):
 				return rev, nil
@@ -513,7 +567,7 @@ func TestEnforceNarrowingFailClosedAfterInterrupt(t *testing.T) {
 			return c.Err()
 		}
 		var res narrowOutcome
-		captureStdout(t, func() { res, _ = enforceNarrowing(ctx, &Config{}, "sb", nil) })
+		captureStdout(t, func() { res, _ = enforceNarrowing(ctx, &Config{}, "sb", nil, nil) })
 		if !res.SandboxDeleted || deleteCtx == nil || deleteCtx.Err() != nil {
 			t.Errorf("fail-closed delete did not run under a live context: res=%+v", res)
 		}
