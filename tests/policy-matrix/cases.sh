@@ -11,6 +11,14 @@
 # HARDENED expected decision after baseline hardening (PR 2): allow | deny | record
 #         "record" = report what happened without a verdict (decision still open).
 #
+#   pm_repo_case ID VIA METHOD URL BODY GRANTED UNGRANTED "WHY"
+#
+# Repo policy cases run only with --repo-policy (granted|ungranted), against a
+# repo whose .agent-policy.yaml requests example.org (optional). GRANTED is
+# the verdict with --allow-host example.org, UNGRANTED without it. A generated
+# repo_* rule binds only the harness binaries (node for claude and pi), so
+# these cases use VIA=node and --repo-policy refuses --harness opencode.
+#
 # Every probe must be harmless if the policy ALLOWS it: OpenShell decides on
 # host, method and path pattern, so probes use paths that match the rule but
 # name nothing real (nonexistent refs, PR 0, made-up endpoints) or empty bodies
@@ -81,3 +89,9 @@ pm_case fs-sandbox              fs   write "/sandbox"                           
 pm_case fs-tmp                  fs   write "/tmp"                                                                               none           allow allow  "scratch"
 pm_case fs-usr                  fs   write "/usr"                                                                               none           deny  deny   "read-only system"
 pm_case fs-etc                  fs   write "/etc"                                                                               none           deny  deny   "read-only config"
+
+# --- Repo policy (.agent-policy.yaml + caller grant); only with --repo-policy
+pm_repo_case repo-granted-get    node GET  "https://example.org/"                                                                 none           allow deny   "granted repo rule: read-only GET (UNGRANTED: optional request omitted)"
+pm_repo_case repo-granted-post   node POST "https://example.org/"                                                                 json-empty     deny  deny   "--allow-host grants GET/HEAD only (policy_denied)"
+pm_repo_case repo-granted-curl   curl GET  "https://example.org/"                                                                 none           deny  deny   "repo rules bind the harness binaries, not bare curl"
+pm_repo_case repo-not-requested  node GET  "https://example.net/"                                                                 none           deny  deny   "a host neither requested nor granted"

@@ -268,7 +268,9 @@ grants:
 ```
 
 `--no-repo-policy` ignores the manifest. OpenShell's runtime denials remain the
-final enforcement boundary.
+final enforcement boundary. See [docs/agent-policy.md](docs/agent-policy.md)
+for the full manifest and grants reference, the restricted hosts and
+`--explain-policy` output.
 
 ## Harness images
 
@@ -453,6 +455,20 @@ make policy-matrix MATRIX_FLAGS="--expect hardened"  # verdicts for the hardened
 Each case records today's decision and the decision expected after baseline
 hardening. Cases where the two differ are marked `[hardened: ...]`.
 
+`--repo-policy granted|ungranted` runs only the repository policy cases, on the
+fixture `jlaska/agent-sandbox-mise-fixture`, whose `.agent-policy.yaml`
+requests `example.org` as optional. With `granted` the session gets
+`--allow-host example.org`. The script first checks that `repo_example_org` is
+in the loaded policy, then that a GET from the harness's process tree is
+allowed, a POST is denied with `policy_denied`, bare `curl` is denied and
+`example.net` (never requested) is denied. With `ungranted` it checks for the
+omission warning and that no `repo_*` rule is loaded, and every case is denied.
+
+```bash
+make policy-matrix MATRIX_FLAGS="--repo-policy granted"
+make policy-matrix MATRIX_FLAGS="--repo-policy ungranted"
+```
+
 ### Workflow gate
 
 `make workflow-gate` works a repository from inside a real session the way an
@@ -464,6 +480,14 @@ and other repositories. Any other failure counts as a FAIL. A second short
 session asks the harness for a reply through its real inference provider. The
 default target is the public fixture `jlaska/agent-sandbox-mise-fixture`, which
 has this repository's rulesets. Branches and the PR are removed on exit.
+
+The gate also checks repository policy on the fixture, whose
+`.agent-policy.yaml` requests `example.org` as optional. Before the session,
+`--explain-policy` must report that request omitted with a warning and must
+reject `--allow-host 169.254.169.254` and `--allow-host api.github.com`, and a
+real session with the latter must fail before creating a sandbox. The main
+session runs with `--allow-host example.org`, so `repo_example_org` must be
+loaded, a GET to it must succeed and a POST must be refused by policy.
 
 ```bash
 make workflow-gate                                                   # claude

@@ -233,7 +233,7 @@ func run(ctx context.Context, cfg *Config) error {
 		preflight.printSession(err != nil)
 	}
 	if err != nil {
-		return err
+		return preflight.reported(err)
 	}
 
 	if err := interrupted(); err != nil {

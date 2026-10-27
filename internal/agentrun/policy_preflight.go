@@ -103,6 +103,39 @@ func runPolicyPreflight(ctx context.Context, cfg *Config, token string, provider
 	return pf, err
 }
 
+// reportedError is a compile failure whose errors the preflight already
+// printed (printSession, printExplain). Its message only summarizes them, so
+// main's "Error: ..." line does not print each one a second time; Unwrap
+// keeps the full compile error.
+type reportedError struct {
+	err    error
+	errors int
+}
+
+func (e *reportedError) Error() string {
+	return fmt.Sprintf("repository policy rejected (%d error(s), listed above)", e.errors)
+}
+
+func (e *reportedError) Unwrap() error { return e.err }
+
+// reported returns err, replaced by a reportedError when it is a compile
+// failure whose error diagnostics pf printed. Call it after printing.
+func (pf *policyPreflight) reported(err error) error {
+	if err == nil || pf == nil || pf.Result == nil {
+		return err
+	}
+	n := 0
+	for _, d := range pf.Result.Diagnostics {
+		if d.Severity == SeverityError {
+			n++
+		}
+	}
+	if n == 0 {
+		return err // a failure with no diagnostic was not printed
+	}
+	return &reportedError{err: err, errors: n}
+}
+
 // repoRules maps each granted repo_* rule key to its host: exactly the
 // repo rules the loaded policy must contain (verifyNarrowed).
 func (pf *policyPreflight) repoRules() map[string]string {
@@ -241,7 +274,7 @@ func explainPolicy(ctx context.Context, cfg *Config, opts HarnessOptions, grants
 	if pf != nil {
 		pf.printExplain(os.Stdout, err)
 	}
-	return err
+	return pf.reported(err)
 }
 
 // ---- GitHub API -------------------------------------------------------------
