@@ -8,4 +8,4 @@ images:
     ref: ghcr.io/jlaska/agent-pi:1.4.0@sha256:9572239909d8099afc48e826819c2d3ef5a172072a342c18353f4c6bcf482250
   opencode:
     # renovate: datasource=docker depName=ghcr.io/jlaska/agent-opencode versioning=semver
-    ref: ghcr.io/jlaska/agent-opencode:1.19.4@sha256:f866c87074a3b0f7736a4bb41cce561f4ff411f8c2d7e4bb6cd59292f8c3f30c
+    ref: ghcr.io/jlaska/agent-opencode:1.19.4@sha256:f9bcfb65d0b4f73a19a90917ef0df38720a93c70408927f10567a8b3ee83e598
