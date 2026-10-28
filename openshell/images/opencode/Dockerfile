@@ -15,8 +15,8 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 #   gh api repos/anomalyco/opencode/releases/tags/v<ver> --jq '.assets[]|select(.name|test("^opencode-linux-(x64|arm64)\\.tar\\.gz$"))|.name+" "+.digest'
 # renovate: datasource=github-releases depName=anomalyco/opencode
 ARG OPENCODE_VERSION=1.19.4
-ARG OPENCODE_SHA256_AMD64=13a8fb2978302071b86f9d7e00da9c8895f9cd846978379c3bdc6a5333536c9b
-ARG OPENCODE_SHA256_ARM64=7900818a6a98881edbbadab4b7525940eff3b9750040c200481f9f56cacee405
+ARG OPENCODE_SHA256_AMD64=849bd6b3d959a1d2ef200ed1634a51c79a45ca236aa26665d75debd694805cce
+ARG OPENCODE_SHA256_ARM64=8568230ccd847dc93e95b9f6894379077d3e014a16b48040743573e77c23e85f
 ARG REVISION=unknown
 ARG CREATED=unknown
 
