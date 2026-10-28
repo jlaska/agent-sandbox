@@ -14,7 +14,7 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # renovate: datasource=npm depName=@earendil-works/pi-coding-agent
 ARG PI_VERSION=1.4.0
 # renovate: datasource=npm depName=pi-provider-litellm
-ARG PI_LITELLM_VERSION=4.4.1
+ARG PI_LITELLM_VERSION=4.5.0
 ARG REVISION=unknown
 ARG CREATED=unknown
 
