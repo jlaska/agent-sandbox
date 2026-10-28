@@ -12,7 +12,7 @@
 #
 # apt packages are intentionally unpinned: the base image digest below pins the
 # Ubuntu archive snapshot closely enough, and Renovate bumps the digest.
-FROM nvcr.io/nvidia/base/ubuntu:24.04@sha256:d9461f428eea54e553add3a5158a0f245c6e1ea73efc59fff8e98e3d4a38e378
+FROM nvcr.io/nvidia/base/ubuntu:26.04@sha256:3cacfd2cba1b5fe1b80c424b7863dad960d75e2edca076c18deb5bd32b3c0740
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 

@@ -67,7 +67,7 @@ pm_case node-litellm-other      node POST "https://litellm.internal.keener.us/po
 pm_case node-litellm-mcp        node POST "https://litellm.internal.keener.us/mcp"                                              json-empty     deny  deny   "LiteLLM MCP gateway reaches other systems"
 pm_case node-litellm-key-info   node GET  "https://litellm.internal.keener.us/key/info"                                         none           deny  deny   "LiteLLM key/user admin"
 pm_case curl-litellm            curl POST "https://litellm.internal.keener.us/v1/chat/completions"                              json-empty     deny  deny   "bare curl bound to litellm (removed)"
-pm_case python-litellm          python POST "https://litellm.internal.keener.us/v1/chat/completions"                            json-empty     deny  deny   "python3.12 bound to litellm (removed)"
+pm_case python-litellm          python POST "https://litellm.internal.keener.us/v1/chat/completions"                            json-empty     deny  deny   "python3.14 bound to litellm (removed)"
 
 # --- Hosts nobody is granted
 pm_case curl-unlisted           curl GET  "https://example.com/"                                                                none           deny  deny   "unlisted host"

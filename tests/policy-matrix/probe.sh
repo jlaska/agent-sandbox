@@ -8,7 +8,7 @@
 # rule's binaries against that process OR ANY ANCESTOR:
 #   curl    curl run directly (ancestor: the exec shell only)
 #   node    curl spawned by node     (node is bound to inference/telemetry/npm rules)
-#   python  curl spawned by python3.12 (bound to litellm_inference)
+#   python  curl spawned by python3.14 (bound to litellm_inference)
 #   git     curl spawned by a git alias (git is bound to github_git/github_api)
 #   gh      gh api itself              (gh is bound to github_api/github_graphql)
 #
@@ -64,7 +64,7 @@ case "$via" in
         # shellcheck disable=SC2016  # JavaScript, not shell
         codes="$(node -e 'const r=require("child_process").spawnSync("curl",process.argv.slice(1),{stdio:["ignore","pipe","inherit"],encoding:"utf8"});process.stdout.write(r.stdout||"");process.exit(r.status===null?125:r.status)' -- "${args[@]}" 2>"$errf")"; rc=$? ;;
     python)
-        codes="$(python3.12 -c 'import subprocess,sys; sys.exit(subprocess.run(["curl"]+sys.argv[1:]).returncode)' "${args[@]}" 2>"$errf")"; rc=$? ;;
+        codes="$(python3.14 -c 'import subprocess,sys; sys.exit(subprocess.run(["curl"]+sys.argv[1:]).returncode)' "${args[@]}" 2>"$errf")"; rc=$? ;;
     git)
         codes="$(git -c 'alias.pm=!curl' pm "${args[@]}" 2>"$errf")"; rc=$? ;;
     gh)
