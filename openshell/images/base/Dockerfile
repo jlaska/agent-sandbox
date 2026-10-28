@@ -12,7 +12,7 @@
 #
 # apt packages are intentionally unpinned: the base image digest below pins the
 # Ubuntu archive snapshot closely enough, and Renovate bumps the digest.
-FROM nvcr.io/nvidia/base/ubuntu:24.04@sha256:7e0f726d635d440d28a7f18e6498d3bdb76c7038bd4c90a090c21eb7c9f40686
+FROM nvcr.io/nvidia/base/ubuntu:24.04@sha256:d9461f428eea54e553add3a5158a0f245c6e1ea73efc59fff8e98e3d4a38e378
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
@@ -51,7 +51,7 @@ RUN set -eux; \
 
 # mise (single binary; checksum from the release's SHASUMS256.txt). CalVer: use loose versioning.
 # renovate: datasource=github-releases depName=jdx/mise versioning=loose
-ARG MISE_VERSION=2026.10.19
+ARG MISE_VERSION=2026.10.21
 RUN set -eux; \
     arch="$(dpkg --print-architecture)"; \
     case "$arch" in amd64) march=x64 ;; arm64) march=arm64 ;; *) echo "unsupported arch $arch" >&2; exit 1 ;; esac; \
@@ -64,7 +64,7 @@ RUN set -eux; \
 
 # uv (checksum from the release's .sha256 sidecar)
 # renovate: datasource=github-releases depName=astral-sh/uv
-ARG UV_VERSION=0.13.5
+ARG UV_VERSION=0.13.6
 RUN set -eux; \
     arch="$(dpkg --print-architecture)"; \
     case "$arch" in amd64) uarch=x86_64 ;; arm64) uarch=aarch64 ;; *) echo "unsupported arch $arch" >&2; exit 1 ;; esac; \
@@ -80,7 +80,7 @@ RUN set -eux; \
 
 # gh (checksum from gh_<ver>_checksums.txt)
 # renovate: datasource=github-releases depName=cli/cli
-ARG GH_VERSION=2.103.2
+ARG GH_VERSION=2.103.3
 RUN set -eux; \
     arch="$(dpkg --print-architecture)"; \
     f="gh_${GH_VERSION}_linux_${arch}.tar.gz"; \
