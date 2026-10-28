@@ -95,6 +95,20 @@ func TestAllowHostGrants(t *testing.T) {
 	}
 }
 
+// Each error names the host once: --allow-host already does, a grants file
+// entry (named by index) gets it added.
+func TestGrantErrorNamesHostOnce(t *testing.T) {
+	_, err := AllowHostGrants([]string{"169.254.169.254"})
+	want := `--allow-host 169.254.169.254: host "169.254.169.254": IP address literals are not allowed`
+	if err == nil || err.Error() != want {
+		t.Errorf("got %v, want %s", err, want)
+	}
+	g := Grant{Host: "docs.example.org", Methods: []string{"FETCH"}, Paths: []string{"/**"}, Source: "grants.yaml grants[0]"}
+	if err := g.validate(); err == nil || !strings.HasPrefix(err.Error(), `grants.yaml grants[0] (host "docs.example.org"): methods:`) {
+		t.Errorf("grants file entry: got %v", err)
+	}
+}
+
 func TestGrantAppliesTo(t *testing.T) {
 	any := Grant{Host: "docs.example.org"}
 	limited := Grant{Host: "docs.example.org", Repos: []string{"example/other-repo"}}
