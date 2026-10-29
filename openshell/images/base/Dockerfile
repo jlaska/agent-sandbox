@@ -36,7 +36,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # node (official tarball, SHASUMS256 verified). npm ships inside the tarball.
 # renovate: datasource=node-version depName=node
-ARG NODE_VERSION=24.22.2
+ARG NODE_VERSION=26.13.0
 # Download scratch space for the tool installs below.
 WORKDIR /tmp
 RUN set -eux; \
