@@ -13,9 +13,10 @@
 # inference settings (Vertex, custom headers) are dropped so agent-run does not
 # forward them.
 #
-# --pr N checks out the PR head in a temporary worktree and gates that code:
-# its agent-run, its gate scripts, and the harnesses tests/gate-harnesses.sh
-# selects for it. A harness whose image sources changed is built locally
+# --pr N checks out the PR head in a temporary worktree and gates that code
+# (its agent-run and its gate scripts) for the harnesses this checkout's
+# tests/gate-harnesses.sh selects, so a PR older than the selector, or one
+# that changes it, is still selected by a known version. A harness whose image sources changed is built locally
 # (openshell/images/build.sh --local) and gated with --image. The PR head gets
 # a `workflow-gate/<harness>` status per harness and the aggregate
 # `workflow-gate` status: pending while running, then success or failure.
@@ -138,8 +139,11 @@ if [[ -n "$PR" ]]; then
     git -C "$REPO_ROOT" worktree add -q --detach "$WORKTREE" "$HEAD_SHA" || exit 2
     SRC="$WORKTREE"
     echo "=== PR #$PR at ${HEAD_SHA:0:12} ==="
-    while IFS= read -r line; do MODES+=("$line"); done \
-        < <(cd "$SRC" && ./tests/gate-harnesses.sh "$FETCH_REF-base" "$HEAD_SHA")
+    # Captured, not read from a process substitution: a selector error must
+    # stop the run, not read as "no harness affected".
+    selected="$(cd "$SRC" && "$SCRIPT_DIR/gate-harnesses.sh" "$FETCH_REF-base" "$HEAD_SHA")" \
+        || { echo "cannot select harnesses for PR #$PR" >&2; exit 2; }
+    while IFS= read -r line; do [[ -n "$line" ]] && MODES+=("$line"); done <<<"$selected"
     git -C "$REPO_ROOT" update-ref -d "$FETCH_REF-base" >/dev/null 2>&1
     if [[ -n "$HARNESSES" ]]; then
         # An explicit list overrides the selection; keep each one's build mode.
