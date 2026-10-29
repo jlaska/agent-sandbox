@@ -42,6 +42,9 @@ HOLD_ARGS_OVERRIDE=""
 ONLY=""
 SKIP_TARGETS=""
 HARNESSES="claude,pi,opencode"
+# agent-run requires a litellm/<id> model for opencode's litellm backend. The target
+# sends no prompt, so the model only has to be declared, not served.
+LITELLM_MODEL="litellm/phase7-gate"
 FROM_KEYCHAIN=false
 KEEP_LOGS=false
 MAKE_FIXTURE=""
@@ -85,6 +88,8 @@ Options:
                           else docker). Passed to agent-run as --driver unless --driver is given.
   --driver D              pass --driver D to agent-run (docker|podman|kubernetes|vm)
   --mise-allow-host H     pass --mise-allow-host H to agent-run (repeatable; e.g. nodejs.org)
+  --litellm-model M       --model for opencode-litellm (default: litellm/phase7-gate; no
+                          prompt is sent, so it need not exist on the LiteLLM server)
   --from-keychain         macOS: load LITELLM_API_KEY / LITELLM_BASE_URL from the Keychain
                           entries litellm-api-key / anthropic-base-url if unset
   --timeout SECS          per-session wait for agent-run to launch the harness (default 900)
@@ -150,6 +155,7 @@ while [[ $# -gt 0 ]]; do
         --engine) ENGINE="${2:?--engine needs a value}"; shift 2 ;;
         --driver) DRIVER="${2:?--driver needs a value}"; shift 2 ;;
         --mise-allow-host) MISE_ALLOW_HOSTS+=("${2:?--mise-allow-host needs a value}"); shift 2 ;;
+        --litellm-model) LITELLM_MODEL="${2:?--litellm-model needs a value}"; shift 2 ;;
         --from-keychain) FROM_KEYCHAIN=true; shift ;;
         --timeout) TIMEOUT="${2:?--timeout needs a value}"; shift 2 ;;
         --hold-args) HOLD_ARGS_OVERRIDE="${2:?--hold-args needs a value}"; shift 2 ;;
@@ -272,7 +278,7 @@ missing_creds() {
 
 extra_args_for() { # target -> agent-run options (one per line)
     case "$1" in
-        opencode-litellm) echo "--inference"; echo "litellm" ;;
+        opencode-litellm) echo "--inference"; echo "litellm"; echo "--model"; echo "$LITELLM_MODEL" ;;
         opencode-anthropic) echo "--inference"; echo "anthropic" ;;
     esac
 }
