@@ -8,6 +8,9 @@ Phase 5 validates that multiple coding agents can operate within the OpenShell s
 
 ## Usage
 
+> The `--provider` and `--max` flags below were removed in #38: `agent-run`
+> now picks inference from the environment. See the README for current usage.
+
 ```bash
 agent-run <repo> <harness> [--provider <provider>] [--model <model>] [--max]
 ```

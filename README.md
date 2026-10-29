@@ -147,7 +147,9 @@ example a LiteLLM proxy). `agent-run` imports the provider profiles it needs fro
 in the binary when the gateway does not have them, and updates a gateway copy
 that differs. The profiles have no endpoints: the sandbox policy binds each
 session's providers (`credential_binding`) to the hosts where their
-credentials may be used, so a profile cannot widen the policy. A profile
+credentials may be used, so a profile cannot widen the policy. Claude's
+`claude-code` provider is bound to api.anthropic.com, or to the LiteLLM
+endpoints when `ANTHROPIC_BASE_URL` names another host, never both. A profile
 attached to a running sandbox cannot be updated, so stop running sessions
 before upgrading `agent-run`.
 
