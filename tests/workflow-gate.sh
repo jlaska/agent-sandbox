@@ -19,7 +19,8 @@
 #
 # Host-side checks: the target repo has the three rulesets, and no App
 # (Integration) can bypass them. Unless --skip-inference, a second short
-# session asks the harness to reply with a token, through its real provider.
+# session asks the harness to reply with a token, through its real provider
+# (retried once, since the provider is a live service).
 #
 # Repository policy: the fixture's .agent-policy.yaml requests example.org as
 # optional. Before the session, --explain-policy (no sandbox) must report that
@@ -339,10 +340,24 @@ else
     case "$HARNESS" in claude|pi) pargs=(-p "$prompt") ;; opencode) pargs=(run "$prompt") ;; esac
     iargs=()
     [[ -n "$IMAGE" ]] && iargs+=(--image "$IMAGE")
-    "$AGENT_RUN" "$REPO" "$HARNESS" ${iargs[@]+"${iargs[@]}"} ${AGENT_ARGS[@]+"${AGENT_ARGS[@]}"} \
-        -- "${pargs[@]}" </dev/null >"$WORKDIR/inference.log" 2>&1
-    if grep -v 'Reply with exactly' "$WORKDIR/inference.log" | grep -q 'WORKFLOW-GATE-OK'; then
-        pass "inference round trip"
+    # One retry: the provider is a live service, and a single miss (pi, for
+    # one, gets no models if its startup model listing fails) should not
+    # fail the gate. A real breakage fails both attempts.
+    infer_ok=false
+    for attempt in 1 2; do
+        "$AGENT_RUN" "$REPO" "$HARNESS" ${iargs[@]+"${iargs[@]}"} ${AGENT_ARGS[@]+"${AGENT_ARGS[@]}"} \
+            -- "${pargs[@]}" </dev/null >"$WORKDIR/inference.log" 2>&1
+        if grep -v 'Reply with exactly' "$WORKDIR/inference.log" | grep -q 'WORKFLOW-GATE-OK'; then
+            infer_ok=true
+            break
+        fi
+        if [[ $attempt -eq 1 ]]; then
+            cp "$WORKDIR/inference.log" "$WORKDIR/inference-1.log"
+            echo "RETRY  inference round trip: $(grep -m1 -iE 'error|fail' "$WORKDIR/inference-1.log" | tr -s '\t ' ' ' | cut -c1-140)"
+        fi
+    done
+    if [[ "$infer_ok" == true ]]; then
+        pass "inference round trip$([[ $attempt -eq 2 ]] && echo " (on retry)")"
     else
         # The harness's output sits between agent-run's launch and cleanup
         # lines; if it never launched, agent-run's own last lines say why.

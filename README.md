@@ -479,7 +479,8 @@ reads checks and marks the PR ready. It also requires each forbidden operation
 to be refused for the right reason. GitHub rulesets must refuse pushes to
 `main`, non-agent branches and tags. OpenShell must refuse merges, auto-merge
 and other repositories. Any other failure counts as a FAIL. A second short
-session asks the harness for a reply through its real inference provider. The
+session asks the harness for a reply through its real inference provider,
+retried once so a single provider hiccup does not fail the gate. The
 default target is the public fixture `jlaska/agent-sandbox-mise-fixture`, which
 has this repository's rulesets. Branches and the PR are removed on exit.
 
