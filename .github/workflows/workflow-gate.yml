@@ -1,0 +1,67 @@
+name: Workflow gate
+
+# The workflow gate (tests/workflow-gate.sh) needs an OpenShell gateway,
+# GitHub App credentials and a LAN-only inference endpoint, so it does not run
+# on hosted runners. This job decides whether a PR needs it and sets the
+# required `workflow-gate` commit status on the PR head:
+#   no harness affected  -> success
+#   otherwise            -> pending, until the owner runs
+#                           tests/gate-all.sh --pr N, which sets the result
+# A result already set for the head commit is left alone.
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  statuses: write
+
+concurrency:
+  group: workflow-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  select:
+    name: Select gated harnesses
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set the workflow-gate status
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          selected="$(./tests/gate-harnesses.sh "$BASE_SHA" "$HEAD_SHA")"
+          names="$(printf '%s\n' "$selected" | awk 'NF {print $1}' | paste -sd, -)"
+          echo "gated harnesses: ${names:-(none)}"
+          # A fork PR's token cannot set statuses; the owner gates it by hand.
+          if [ "$HEAD_REPO" != "$REPO" ]; then
+            echo "::notice::fork PR: run tests/gate-all.sh after review"
+            exit 0
+          fi
+          post() {
+            gh api -X POST "repos/$REPO/statuses/$HEAD_SHA" \
+              -f state="$1" -f context=workflow-gate -f description="$2" > /dev/null
+          }
+          if [ -z "$names" ]; then
+            post success "No harness affected"
+            exit 0
+          fi
+          # Statuses are newest first; keep a result tests/gate-all.sh already set.
+          current="$(gh api "repos/$REPO/commits/$HEAD_SHA/statuses" \
+            --jq '[.[] | select(.context == "workflow-gate")][0].state // ""')"
+          case "$current" in
+            success | failure | error) echo "workflow-gate already $current for $HEAD_SHA" ;;
+            *) post pending "Needs $names: run tests/gate-all.sh --pr $PR_NUMBER" ;;
+          esac

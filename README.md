@@ -497,6 +497,26 @@ make workflow-gate                                                   # claude
 ./tests/workflow-gate.sh --harness opencode -- --inference litellm --model litellm/gpt-6-luna
 ```
 
+`tests/gate-all.sh` (`make gate-all`) runs the gate for several harnesses in
+turn. It takes the LiteLLM credentials from the environment or the macOS
+Keychain, and per-harness agent-run options from `GATE_ARGS_CLAUDE`,
+`GATE_ARGS_PI` and `GATE_ARGS_OPENCODE`. With `--pr N` it gates a PR's head:
+`tests/gate-harnesses.sh` picks the harnesses the PR affects, an image whose
+sources changed is built locally first, and the result is posted as the PR's
+`workflow-gate` commit status (plus one `workflow-gate/<harness>` status per
+harness).
+
+`main` requires the `workflow-gate` status. The `Workflow gate` CI job sets it
+to success for a PR that affects no harness, and to pending otherwise until
+`tests/gate-all.sh --pr N` reports the result.
+
+```bash
+export GATE_ARGS_PI="--model gpt-6-luna"
+export GATE_ARGS_OPENCODE="--inference litellm --model litellm/gpt-6-luna"
+make gate-all                          # claude, pi and opencode on this checkout
+./tests/gate-all.sh --pr 119           # gate PR 119 and post its status
+```
+
 ## License
 
 See [LICENSE](LICENSE) for details.
