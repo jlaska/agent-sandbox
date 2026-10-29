@@ -36,7 +36,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # node (official tarball, SHASUMS256 verified). npm ships inside the tarball.
 # renovate: datasource=node-version depName=node
-ARG NODE_VERSION=24.22.1
+ARG NODE_VERSION=24.22.2
 # Download scratch space for the tool installs below.
 WORKDIR /tmp
 RUN set -eux; \
@@ -51,7 +51,7 @@ RUN set -eux; \
 
 # mise (single binary; checksum from the release's SHASUMS256.txt). CalVer: use loose versioning.
 # renovate: datasource=github-releases depName=jdx/mise versioning=loose
-ARG MISE_VERSION=2026.10.21
+ARG MISE_VERSION=2026.10.22
 RUN set -eux; \
     arch="$(dpkg --print-architecture)"; \
     case "$arch" in amd64) march=x64 ;; arm64) march=arm64 ;; *) echo "unsupported arch $arch" >&2; exit 1 ;; esac; \
