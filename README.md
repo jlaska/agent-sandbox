@@ -110,7 +110,7 @@ opencode needs an API key. `--inference` picks the backend; without it,
 `ANTHROPIC_API_KEY` is set.
 
 ```bash
-# LiteLLM (also needs LITELLM_BASE_URL)
+# LiteLLM (also needs LITELLM_BASE_URL; --model litellm/<model-id> is required)
 export LITELLM_API_KEY=sk-litellm-...
 export LITELLM_BASE_URL=https://litellm.example.com
 agent-run jlaska/agent-sandbox opencode --inference litellm --model litellm/<model-id>

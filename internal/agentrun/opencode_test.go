@@ -104,7 +104,7 @@ func TestOpencodeProviders(t *testing.T) {
 	t.Setenv("LITELLM_API_KEY", "l")
 	t.Setenv("ANTHROPIC_API_KEY", "a")
 	for inf, want := range map[string]string{"": "litellm-inference", "litellm": "litellm-inference", "anthropic": "anthropic"} {
-		got := h.Providers(opencodeOpts(t, &Config{Inference: inf}))
+		got := h.Providers(opencodeOpts(t, &Config{Inference: inf, Model: "litellm/m"}))
 		if len(got) != 1 || got[0] != want {
 			t.Errorf("inference %q: got %v, want [%s]", inf, got, want)
 		}
@@ -121,6 +121,25 @@ func TestOpencodeProviders(t *testing.T) {
 	}
 	if got := harnesses["pi"].Providers(o); len(got) != 1 || got[0] != "litellm-inference" {
 		t.Errorf("pi: got %v", got)
+	}
+}
+
+// opencode drops a LiteLLM provider with no models, so the litellm backend
+// needs a litellm/<id> model; other backends do not.
+func TestOpencodeLiteLLMRequiresModel(t *testing.T) {
+	clearOpencodeEnv(t)
+	t.Setenv("LITELLM_API_KEY", "l")
+	for _, m := range []string{"", "gpt-6-luna", "litellm/", "anthropic/claude-sonnet-4-5"} {
+		if _, err := resolveHarnessOptions(HarnessOpencode, &Config{Model: m}); err == nil || !strings.Contains(err.Error(), "--model litellm/<model-id>") {
+			t.Errorf("model %q: err = %v", m, err)
+		}
+	}
+	if o := opencodeOpts(t, &Config{Model: "litellm/gpt-6-luna"}); o.Backend != inferenceLiteLLM {
+		t.Errorf("backend = %q", o.Backend)
+	}
+	t.Setenv("ANTHROPIC_API_KEY", "a")
+	if o := opencodeOpts(t, &Config{Inference: "anthropic"}); o.Backend != inferenceAnthropic {
+		t.Errorf("backend = %q", o.Backend)
 	}
 }
 
@@ -162,7 +181,7 @@ func TestCreateInferenceProvidersOpencode(t *testing.T) {
 				t.Setenv(k, v)
 			}
 			withMockExec(t, func(mock *mockCmd) {
-				flags, names, err := createInferenceProviders(context.Background(), "s1", HarnessOpencode, opencodeOpts(t, &Config{Inference: tt.inference}))
+				flags, names, err := createInferenceProviders(context.Background(), "s1", HarnessOpencode, opencodeOpts(t, &Config{Inference: tt.inference, Model: "litellm/m"}))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -311,7 +330,7 @@ func TestOpencodePreseed(t *testing.T) {
 	t.Run("litellm needs base url", func(t *testing.T) {
 		clearOpencodeEnv(t)
 		t.Setenv("LITELLM_API_KEY", "l")
-		o := opencodeOpts(t, &Config{})
+		o := opencodeOpts(t, &Config{Model: "litellm/m"})
 		withMockExec(t, func(mock *mockCmd) {
 			err := h.Preseed(context.Background(), "sb", o)
 			if err == nil || !strings.Contains(err.Error(), "LITELLM_BASE_URL") || len(mock.calls) != 0 {

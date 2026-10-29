@@ -40,9 +40,21 @@ func resolveHarnessOptions(harness string, cfg *Config) (HarnessOptions, error) 
 		if err != nil {
 			return o, err
 		}
+		// opencode drops a provider with no models, so a LiteLLM run without
+		// a litellm/<id> model fails inside the sandbox with an opaque
+		// "UnknownError" (ProviderNoProvidersError in its logs).
+		if _, ok := liteLLMModelID(cfg.Model); backend == inferenceLiteLLM && !ok {
+			return o, fmt.Errorf("the opencode litellm backend requires --model litellm/<model-id> (got %q); opencode only declares that model for the LiteLLM provider (or use --inference anthropic)", cfg.Model)
+		}
 		o.Backend = backend
 	}
 	return o, nil
+}
+
+// liteLLMModelID returns the model id of an opencode litellm/<id> model.
+func liteLLMModelID(model string) (string, bool) {
+	id, ok := strings.CutPrefix(model, "litellm/")
+	return id, ok && id != ""
 }
 
 // Harness describes one agent CLI that agent-run can launch in a sandbox.
@@ -212,7 +224,7 @@ func opencodeConfig(backend, liteLLMBaseURL, model string) ([]byte, error) {
 		}
 	case inferenceLiteLLM:
 		models := map[string]any{}
-		if id, ok := strings.CutPrefix(model, "litellm/"); ok && id != "" {
+		if id, ok := liteLLMModelID(model); ok {
 			models[id] = map[string]any{"name": id}
 		}
 		cfg["enabled_providers"] = []string{"litellm"}
