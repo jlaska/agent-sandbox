@@ -17,7 +17,7 @@ pre-commit, ...) out of the image and into the target repo's mise config.
 ### One image per harness, built from a shared base
 
 ```text
-nvcr.io/nvidia/base/ubuntu:24.04@sha256:...        (Renovate: digest)
+nvcr.io/nvidia/base/ubuntu:26.04@sha256:...        (Renovate: digest)
 └── base   (built first by build.sh, never published)
     ├── agent-claude    -> ghcr.io/jlaska/agent-claude
     ├── agent-pi        -> ghcr.io/jlaska/agent-pi
