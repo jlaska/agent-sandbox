@@ -222,6 +222,9 @@ func run(ctx context.Context, cfg *Config) error {
 		fmt.Printf(" (expires %s)", cred.ExpiresAt.Format(time.RFC3339))
 	}
 	fmt.Println()
+	if cred.Permissions != nil {
+		fmt.Printf("[agent-run] GitHub token permissions: %s\n", FormatPermissions(cred.Permissions))
+	}
 
 	// Step 2b: Policy preflight. Pin the default branch to a commit, read its
 	// .agent-policy.yaml and compile the session policy. Any rejection fails

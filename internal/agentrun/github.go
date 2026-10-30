@@ -22,6 +22,8 @@ type GitHubCredential struct {
 	Mode      string
 	Token     string
 	ExpiresAt time.Time // zero for PAT
+	// Permissions granted to an App token; nil for PAT.
+	Permissions map[string]string
 }
 
 // appKeychainExists checks if the GitHub App private key is in the keychain.
@@ -62,9 +64,10 @@ func ResolveGitHubCredential(cfg *Config) (*GitHubCredential, error) {
 			return nil, fmt.Errorf("GitHub App token minting failed: %w", err)
 		}
 		return &GitHubCredential{
-			Mode:      GitHubModeApp,
-			Token:     result.Token,
-			ExpiresAt: result.ExpiresAt,
+			Mode:        GitHubModeApp,
+			Token:       result.Token,
+			ExpiresAt:   result.ExpiresAt,
+			Permissions: result.Permissions,
 		}, nil
 	}
 

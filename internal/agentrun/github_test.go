@@ -186,7 +186,7 @@ func TestResolveGitHubCredential(t *testing.T) {
 
 		// Mock HTTP for token minting
 		httpDo = func(req *http.Request) (*http.Response, error) {
-			resp := `{"token":"ghs_app_token","expires_at":"2025-01-01T01:00:00Z","repositories":[{"full_name":"jlaska/agent-sandbox"}]}`
+			resp := `{"token":"ghs_app_token","expires_at":"2025-01-01T01:00:00Z","repositories":[{"full_name":"jlaska/agent-sandbox"}]` + grantedPermsJSON + `}`
 			return &http.Response{
 				StatusCode: 201,
 				Body:       io.NopCloser(strings.NewReader(resp)),
@@ -206,6 +206,9 @@ func TestResolveGitHubCredential(t *testing.T) {
 		}
 		if !cred.Revocable() {
 			t.Error("App token should be revocable")
+		}
+		if cred.Permissions["contents"] != "write" {
+			t.Errorf("Permissions = %v, want the granted set", cred.Permissions)
 		}
 	})
 

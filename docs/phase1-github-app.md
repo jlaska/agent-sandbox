@@ -18,6 +18,16 @@
 | Issues | Read-only |
 | Checks | Read-only |
 | Commit statuses | Read-only |
+| Actions | Read-only |
+
+Every session token requests exactly this set (`installationTokenPermissions`
+in `internal/agentrun/token.go`), so it never carries a permission the App
+gains later. agent-run rejects a grant broader than the request, and fails with
+a clear error if the App lacks one of these permissions (GitHub answers 422).
+
+**Workflows** and **Administration** must stay off. With Workflows write, an
+agent could push `.github/workflows/*` to an `agent/**` branch, and a same-repo
+PR would run it with the repository's Actions secrets.
 
 ## GitHub Rulesets
 

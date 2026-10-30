@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 )
@@ -33,10 +34,72 @@ var (
 	timeNow       = time.Now
 )
 
-// TokenResult holds a minted installation token and its expiration.
+// TokenResult holds a minted installation token, its expiration and the
+// permissions GitHub granted it.
 type TokenResult struct {
-	Token     string
-	ExpiresAt time.Time
+	Token       string
+	ExpiresAt   time.Time
+	Permissions map[string]string
+}
+
+// installationTokenPermissions is the permission set requested for every
+// repository-scoped installation token. Without an explicit set GitHub grants
+// everything the installation has, so this is the ceiling for what the token
+// can do, whatever the App is configured with.
+//
+// workflows is deliberately absent: with it, a pushed agent/** branch could
+// add or change .github/workflows/*, and a same-repo PR would run that code
+// with the repository's Actions secrets. administration is absent for the same
+// reason: the agent must never change repository settings or protections.
+var installationTokenPermissions = map[string]string{
+	"metadata":      "read",  // required by GitHub for any repository access
+	"contents":      "write", // clone, fetch and push agent/** branches
+	"pull_requests": "write", // open PRs and comment on them
+	"issues":        "read",  // read the issue a task refers to
+	"checks":        "read",  // read check runs on the agent's PRs
+	"statuses":      "read",  // read commit statuses (e.g. workflow-gate)
+	"actions":       "read",  // read workflow runs and logs for failing checks
+}
+
+// permissionLevels ranks GitHub permission levels so a grant can be compared
+// with the request.
+var permissionLevels = map[string]int{"read": 1, "write": 2, "admin": 3}
+
+// errMissingPermissions means the GitHub App installation lacks a permission
+// in installationTokenPermissions.
+var errMissingPermissions = errors.New("the GitHub App installation lacks a requested permission")
+
+// FormatPermissions renders a permission map as sorted key=level pairs.
+func FormatPermissions(perms map[string]string) string {
+	keys := make([]string, 0, len(perms))
+	for k := range perms {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	pairs := make([]string, len(keys))
+	for i, k := range keys {
+		pairs[i] = k + "=" + perms[k]
+	}
+	return strings.Join(pairs, " ")
+}
+
+// checkGrantedPermissions fails if GitHub granted a permission that was not
+// requested or a level above the requested one.
+func checkGrantedPermissions(requested, granted map[string]string) error {
+	if granted == nil {
+		return fmt.Errorf("token response has no permissions (expected at most %s)", FormatPermissions(requested))
+	}
+	for k, level := range granted {
+		want, ok := requested[k]
+		if !ok {
+			return fmt.Errorf("token granted unrequested permission %s=%s (expected at most %s)", k, level, FormatPermissions(requested))
+		}
+		got, known := permissionLevels[level]
+		if !known || got > permissionLevels[want] {
+			return fmt.Errorf("token granted %s=%s, above the requested %s=%s", k, level, k, want)
+		}
+	}
+	return nil
 }
 
 // errRepoNotAccessible means the GitHub App installation cannot reach the
@@ -205,6 +268,7 @@ func mintInstallationToken(jwt, installationID, owner, repoName string) (*TokenR
 
 	body := map[string]interface{}{
 		"repositories": []string{repoName},
+		"permissions":  installationTokenPermissions,
 	}
 	bodyJSON, err := json.Marshal(body)
 	if err != nil {
@@ -231,9 +295,19 @@ func mintInstallationToken(jwt, installationID, owner, repoName string) (*TokenR
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 
-	// GitHub answers 422 when the repository is not one the installation can
-	// reach (including a repo's old name after a rename).
+	// GitHub answers 422 when the installation lacks a requested permission
+	// ("The permissions requested are not granted to this installation.") or
+	// when the repository is not one the installation can reach (including a
+	// repo's old name after a rename).
 	if resp.StatusCode == http.StatusUnprocessableEntity {
+		var apiErr struct {
+			Message string `json:"message"`
+		}
+		_ = json.Unmarshal(respBody, &apiErr)
+		if strings.Contains(strings.ToLower(apiErr.Message), "permission") {
+			return nil, fmt.Errorf("%w (HTTP 422): requested %s; grant these in the GitHub App's permission settings: %s",
+				errMissingPermissions, FormatPermissions(installationTokenPermissions), redactTokenInResponse(string(respBody)))
+		}
 		return nil, fmt.Errorf("%w: %s/%s (HTTP 422): %s", errRepoNotAccessible, owner, repoName, redactTokenInResponse(string(respBody)))
 	}
 	if resp.StatusCode != http.StatusCreated {
@@ -246,6 +320,7 @@ func mintInstallationToken(jwt, installationID, owner, repoName string) (*TokenR
 		Repos     []struct {
 			FullName string `json:"full_name"`
 		} `json:"repositories"`
+		Permissions map[string]string `json:"permissions"`
 	}
 	if err := json.Unmarshal(respBody, &result); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
@@ -267,11 +342,17 @@ func mintInstallationToken(jwt, installationID, owner, repoName string) (*TokenR
 		return nil, fmt.Errorf("token scoped to unexpected repositories %q (expected only %q)", names, expectedRepo)
 	}
 
+	// Validate that GitHub granted no more than was requested.
+	if err := checkGrantedPermissions(installationTokenPermissions, result.Permissions); err != nil {
+		return nil, err
+	}
+
 	expiresAt, _ := time.Parse(time.RFC3339, result.ExpiresAt)
 
 	return &TokenResult{
-		Token:     result.Token,
-		ExpiresAt: expiresAt,
+		Token:       result.Token,
+		ExpiresAt:   expiresAt,
+		Permissions: result.Permissions,
 	}, nil
 }
 

@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -156,6 +157,18 @@ func TestGetAppPrivateKey(t *testing.T) {
 	})
 }
 
+// grantedPermsJSON is a 201 "permissions" field granting exactly
+// installationTokenPermissions.
+const grantedPermsJSON = `,"permissions":{"metadata":"read","contents":"write","pull_requests":"write","issues":"read","checks":"read","statuses":"read","actions":"read"}`
+
+func TestInstallationTokenPermissionsExcludeDangerous(t *testing.T) {
+	for _, k := range []string{"workflows", "administration"} {
+		if level, ok := installationTokenPermissions[k]; ok {
+			t.Errorf("installationTokenPermissions requests %s=%s; it must never be requested", k, level)
+		}
+	}
+}
+
 func TestMintInstallationToken(t *testing.T) {
 	origHTTP := httpDo
 	origBase := githubAPIBase
@@ -185,8 +198,15 @@ func TestMintInstallationToken(t *testing.T) {
 			if !ok || len(repos) != 1 || repos[0] != "my-repo" {
 				t.Errorf("expected repositories=[my-repo], got %v", reqBody["repositories"])
 			}
+			var perms struct {
+				Permissions map[string]string `json:"permissions"`
+			}
+			_ = json.Unmarshal(body, &perms)
+			if !reflect.DeepEqual(perms.Permissions, installationTokenPermissions) {
+				t.Errorf("permissions = %v, want exactly %v", perms.Permissions, installationTokenPermissions)
+			}
 
-			resp := `{"token":"ghs_test123","expires_at":"2025-01-01T00:00:00Z","repositories":[{"full_name":"owner/my-repo"}]}`
+			resp := `{"token":"ghs_test123","expires_at":"2025-01-01T00:00:00Z","repositories":[{"full_name":"owner/my-repo"}]` + grantedPermsJSON + `}`
 			return &http.Response{
 				StatusCode: 201,
 				Body:       io.NopCloser(strings.NewReader(resp)),
@@ -199,6 +219,68 @@ func TestMintInstallationToken(t *testing.T) {
 		}
 		if result.Token != "ghs_test123" {
 			t.Errorf("token = %q, want ghs_test123", result.Token)
+		}
+		if !reflect.DeepEqual(result.Permissions, installationTokenPermissions) {
+			t.Errorf("permissions = %v, want %v", result.Permissions, installationTokenPermissions)
+		}
+	})
+
+	// A narrower grant is not a risk; GitHub reports what it granted.
+	t.Run("narrower grant accepted", func(t *testing.T) {
+		httpDo = func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: 201,
+				Body:       io.NopCloser(strings.NewReader(`{"token":"ghs_test","expires_at":"2025-01-01T00:00:00Z","repositories":[{"full_name":"owner/my-repo"}],"permissions":{"metadata":"read","contents":"read"}}`)),
+			}, nil
+		}
+		result, err := mintInstallationToken("jwt", "12345", "owner", "my-repo")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got := FormatPermissions(result.Permissions); got != "contents=read metadata=read" {
+			t.Errorf("permissions = %q, want contents=read metadata=read", got)
+		}
+	})
+
+	// The permission check fails closed on an over-broad or unverifiable grant,
+	// and never echoes the token.
+	for name, tc := range map[string]struct{ perms, want string }{
+		"no permissions":   {``, "no permissions"},
+		"extra permission": {`,"permissions":{"metadata":"read","workflows":"write"}`, "unrequested permission workflows=write"},
+		"escalated level":  {`,"permissions":{"metadata":"read","issues":"write"}`, "issues=write, above the requested issues=read"},
+		"admin level":      {`,"permissions":{"contents":"admin"}`, "contents=admin"},
+		"unknown level":    {`,"permissions":{"contents":"owner"}`, "contents=owner"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			httpDo = func(req *http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: 201,
+					Body:       io.NopCloser(strings.NewReader(`{"token":"ghs_secret","expires_at":"2025-01-01T00:00:00Z","repositories":[{"full_name":"owner/my-repo"}]` + tc.perms + `}`)),
+				}, nil
+			}
+			_, err := mintInstallationToken("jwt", "12345", "owner", "my-repo")
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err = %v, want it to mention %q", err, tc.want)
+			}
+			if strings.Contains(err.Error(), "ghs_secret") {
+				t.Errorf("error leaks the token: %v", err)
+			}
+		})
+	}
+
+	t.Run("missing permission (422)", func(t *testing.T) {
+		httpDo = func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: 422,
+				Body:       io.NopCloser(strings.NewReader(`{"message":"The permissions requested are not granted to this installation.","documentation_url":"https://docs.github.com/rest/apps/apps#create-an-installation-access-token-for-an-app","status":"422"}`)),
+			}, nil
+		}
+		_, err := mintInstallationToken("jwt", "12345", "owner", "my-repo")
+		if errors.Is(err, errRepoNotAccessible) {
+			t.Fatalf("err = %v, must not be errRepoNotAccessible", err)
+		}
+		if !errors.Is(err, errMissingPermissions) || !strings.Contains(err.Error(), "actions=read") || !strings.Contains(err.Error(), "GitHub App") {
+			t.Errorf("err = %v, want errMissingPermissions naming the permission set and the App settings", err)
 		}
 	})
 
@@ -356,7 +438,7 @@ func TestMintTokenIntegration(t *testing.T) {
 			t.Errorf("expected repos=[agent-sandbox], got %v", repos)
 		}
 
-		resp := `{"token":"ghs_scoped","expires_at":"2025-01-01T01:00:00Z","repositories":[{"full_name":"jlaska/agent-sandbox"}]}`
+		resp := `{"token":"ghs_scoped","expires_at":"2025-01-01T01:00:00Z","repositories":[{"full_name":"jlaska/agent-sandbox"}]` + grantedPermsJSON + `}`
 		return &http.Response{
 			StatusCode: 201,
 			Body:       io.NopCloser(strings.NewReader(resp)),
