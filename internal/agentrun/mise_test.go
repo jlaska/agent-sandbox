@@ -387,7 +387,7 @@ func TestRunMisePhaseLogPaths(t *testing.T) {
 			}
 			var installed bool
 			for _, c := range callStrings(m) {
-				if strings.Contains(c, "mise trust 'mise.toml' && mise install --yes") {
+				if strings.Contains(c, "mise trust 'mise.toml' && mise install --locked --yes") {
 					installed = true
 				}
 			}
@@ -412,6 +412,9 @@ func TestRunMisePhaseLogPaths(t *testing.T) {
 			for _, c := range callStrings(m) {
 				if strings.Contains(c, "-mindepth 1 -delete") {
 					cleared = true
+				}
+				if strings.Contains(c, "--locked") {
+					t.Errorf("install without a lockfile must not pass --locked: %s", c)
 				}
 			}
 			if !cleared {
@@ -504,17 +507,23 @@ func TestMiseInstallFailurePrintsDeniedEgress(t *testing.T) {
 // The default install trusts only the detected files, under paranoid mode and
 // with hooks off; --mise-unsafe restores the plain repo-wide trust.
 func TestMiseInstallScript(t *testing.T) {
-	got := miseInstallScript([]string{"mise.toml", ".tool-versions"}, false)
+	got := miseInstallScript([]string{"mise.toml", ".tool-versions"}, false, false)
 	want := "source ~/.profile 2>/dev/null; cd /sandbox/repo && export MISE_PARANOID=1 MISE_NO_HOOKS=1 " +
 		"MISE_MINIMUM_RELEASE_AGE=3d UV_EXCLUDE_NEWER='3 days' npm_config_min_release_age=3 && " +
 		"mise trust 'mise.toml' && mise trust '.tool-versions' && mise install --yes"
 	if got != want {
 		t.Errorf("hardened:\n got %s\nwant %s", got, want)
 	}
-	got = miseInstallScript([]string{"mise.toml"}, true)
+	got = miseInstallScript([]string{"mise.toml"}, true, false)
 	if strings.Contains(got, "MISE_PARANOID") || strings.Contains(got, "MISE_NO_HOOKS") ||
 		!strings.Contains(got, "export "+dependencyCooldownOffEnv+" && mise trust /sandbox/repo && mise install --yes") {
 		t.Errorf("unsafe: %s", got)
+	}
+	// A committed mise.lock installs strictly from it, hardened or not.
+	for _, unsafe := range []bool{false, true} {
+		if got := miseInstallScript([]string{"mise.toml"}, unsafe, true); !strings.HasSuffix(got, " && mise install --locked --yes") {
+			t.Errorf("locked (unsafe=%v): %s", unsafe, got)
+		}
 	}
 }
 

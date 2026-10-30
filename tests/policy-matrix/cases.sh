@@ -83,6 +83,9 @@ pm_case curl-pypi               curl GET  "https://pypi.org/simple/"            
 # --- Bootstrap egress must be gone after narrowing
 pm_case curl-dl-k8s             curl GET  "https://dl.k8s.io/release/stable.txt"                                                none           deny  deny   "mise_bootstrap removed"
 pm_case node-gcs                node GET  "https://storage.googleapis.com/"                                                     none           deny  deny   "mise_bootstrap removed"
+pm_case curl-raw-github         curl GET  "https://raw.githubusercontent.com/{OWNER}/{REPO}/policy-matrix-none/README.md"       none           deny  deny   "mise_bootstrap removed"
+pm_case curl-sigstore-tuf       curl GET  "https://tuf-repo-cdn.sigstore.dev/root.json"                                         none           deny  deny   "mise_bootstrap removed"
+pm_case gh-other-attestations   gh GET    "https://api.github.com/repos/cli/cli/attestations/sha256:0000000000000000000000000000000000000000000000000000000000000000" none deny deny "mise_bootstrap removed"
 
 # --- Filesystem (Landlock + image)
 pm_case fs-sandbox              fs   write "/sandbox"                                                                           none           allow allow  "workspace"

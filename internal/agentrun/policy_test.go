@@ -336,9 +336,10 @@ func TestRealPolicyParsesAndMiseBootstrapBoundToMiseOnly(t *testing.T) {
 	for _, e := range mb.Endpoints {
 		hosts[e.Host] = true
 	}
-	for _, h := range []string{"github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com",
+	for _, h := range []string{"github.com", "raw.githubusercontent.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com",
 		"api.github.com", "mise-versions.jdx.dev", "mise.jdx.dev", "pypi.org", "files.pythonhosted.org",
-		"registry.npmjs.org", "dl.k8s.io", "cdn.dl.k8s.io", "get.helm.sh", "storage.googleapis.com"} {
+		"registry.npmjs.org", "dl.k8s.io", "cdn.dl.k8s.io", "get.helm.sh", "storage.googleapis.com",
+		"tuf-repo-cdn.sigstore.dev"} {
 		if !hosts[h] {
 			t.Errorf("mise_bootstrap missing host %s", h)
 		}
@@ -400,7 +401,7 @@ func TestRealPolicyExtraMiseHostsRender(t *testing.T) {
 	}
 	// The GitHub hosts carry the credential binding; an unbound duplicate would
 	// make OpenShell reject the whole policy.
-	for _, h := range []string{"github.com", "API.github.com:443"} {
+	for _, h := range []string{"github.com", "API.github.com:443", "raw.githubusercontent.com"} {
 		if _, err := GeneratePolicyWithHosts("jlaska/agent-sandbox", []string{h}); err == nil {
 			t.Errorf("--mise-allow-host %s must be rejected", h)
 		}
@@ -504,8 +505,8 @@ func TestSessionPolicyBindings(t *testing.T) {
 				}
 			}
 		}
-		if bound[sp.GitHubProvider] < 5 { // github_git, github_api, github_graphql, mise_bootstrap x2
-			t.Errorf("%s: only %d GitHub endpoints bound; want at least 5", tc.harness, bound[sp.GitHubProvider])
+		if bound[sp.GitHubProvider] < 6 { // github_git, github_api, github_graphql, mise_bootstrap x3
+			t.Errorf("%s: only %d GitHub endpoints bound; want at least 6", tc.harness, bound[sp.GitHubProvider])
 		}
 		for _, inf := range []string{sp.AnthropicProvider, sp.LiteLLMProvider} {
 			if inf != "" && bound[inf] < 2 { // the claude/node rule and the opencode rule
@@ -615,6 +616,36 @@ func TestSessionPolicyGitHubScope(t *testing.T) {
 	}
 	if deletes != 1 {
 		t.Errorf("github_api has %d DELETE rules, want 1", deletes)
+	}
+}
+
+// mise_bootstrap's credential-bound GitHub endpoints are read-only, and
+// api.github.com allows the attestation lookups mise needs to verify
+// provenance = "github-attestations" lockfile entries.
+func TestMiseBootstrapGitHubReadOnly(t *testing.T) {
+	p := renderSessionPolicy(t, SessionProviders{GitHubProvider: GitHubProviderType})
+	mb, ok := p.NetworkPolicies[miseBootstrapRule]
+	if !ok {
+		t.Fatal("mise_bootstrap rule missing")
+	}
+	apiPaths := map[string]bool{}
+	for _, e := range mb.Endpoints {
+		if e.CredentialBinding == nil {
+			continue
+		}
+		for _, r := range e.Rules {
+			if a := r.Allow; a.Method != "GET" && a.Method != "HEAD" {
+				t.Errorf("mise_bootstrap %s allows %s %s; bound endpoints must be read-only", e.Host, a.Method, a.Path)
+			}
+			if e.Host == "api.github.com" {
+				apiPaths[r.Allow.Path] = true
+			}
+		}
+	}
+	for _, want := range []string{"/repos/*/*/attestations/**", "/repos/*/*"} {
+		if !apiPaths[want] {
+			t.Errorf("mise_bootstrap api.github.com missing GET %s (attestation verification)", want)
+		}
 	}
 }
 

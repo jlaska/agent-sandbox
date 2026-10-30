@@ -160,7 +160,7 @@ nor any grant can override them:
 | `localhost` and single-label names | `localhost`, `intranet` |
 | Local and internal suffixes: `.localhost`, `.local`, `.cluster.local`, `.internal`, `.svc`, `.home.arpa`, `.lan` | `printer.local`, `api.default.svc` |
 | Any host the rendered baseline policy already governs, including the temporary mise bootstrap hosts and `--mise-allow-host` values | `api.github.com`, `registry.npmjs.org`, `api.anthropic.com`, `dl.k8s.io` |
-| GitHub domains and their subdomains: `github.com`, `githubusercontent.com`, `github.io`, `ghcr.io` | `gist.github.com`, `raw.githubusercontent.com` |
+| GitHub domains and their subdomains: `github.com`, `githubusercontent.com`, `github.io`, `ghcr.io` | `gist.github.com`, `gist.githubusercontent.com` |
 
 Baseline hosts are restricted because a second rule for the same host would
 broaden the baseline's per-binary, per-path scoping (for example, the

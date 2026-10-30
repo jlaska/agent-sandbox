@@ -135,7 +135,7 @@ var providerNameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,127}$`)
 // githubCredentialHosts carry the GitHub credential_binding in the template.
 // --mise-allow-host may not add them: OpenShell requires every endpoint on a
 // host to agree on the binding, and the template already covers them.
-var githubCredentialHosts = map[string]bool{"github.com": true, "api.github.com": true}
+var githubCredentialHosts = map[string]bool{"github.com": true, "api.github.com": true, "raw.githubusercontent.com": true}
 
 // parseMiseHosts converts validated host[:port] values (default port 443)
 // into template data, dropping duplicates while keeping order.
