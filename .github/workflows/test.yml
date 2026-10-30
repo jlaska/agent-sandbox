@@ -116,4 +116,4 @@ jobs:
 
       # Run from the repo root with no file argument so the validator discovers the config itself.
       - name: renovate-config-validator
-        run: npx --yes --package renovate@44.187.0 renovate-config-validator --strict
+        run: npx --yes --package renovate@44.188.0 renovate-config-validator --strict
