@@ -168,6 +168,21 @@ fi
 names=""
 for line in "${MODES[@]}"; do names="$names ${line%% *}"; done
 names="${names# }"
+
+# agent-run refuses opencode's litellm backend (the default here: LiteLLM
+# credentials are always set) without --model litellm/<id>. Catch it before
+# any status or build, not as a FAIL in every opencode step.
+if [[ " $names " == *" opencode "* ]]; then
+    oargs=" ${GATE_ARGS_OPENCODE:-} ${AGENT_ARGS[*]-} "
+    oargs="${oargs//=/ }"
+    if [[ "$oargs" != *" --model "* && "$oargs" != *" --inference anthropic "* ]]; then
+        echo "opencode needs a LiteLLM model: set GATE_ARGS_OPENCODE, e.g." >&2
+        echo '  export GATE_ARGS_OPENCODE="--inference litellm --model litellm/<model-id>"' >&2
+        echo "or leave opencode out with --harness" >&2
+        exit 2
+    fi
+fi
+
 echo "Gating: $names"
 for h in $names; do status pending "workflow-gate/$h" "Queued (tests/gate-all.sh)"; done
 status pending workflow-gate "Running: $names"
