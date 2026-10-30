@@ -26,6 +26,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         git \
         iproute2 \
         jq \
+        libatomic1 \
         make \
         nftables \
         openssh-sftp-server \

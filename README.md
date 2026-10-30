@@ -323,7 +323,8 @@ one, `agent-run` warns.
 ### Install egress
 
 The install runs under a temporary `mise_bootstrap` network rule that allows
-read-only access to the tool registries (GitHub releases, mise, PyPI, npm,
+read-only access to the tool registries (GitHub releases, raw content and
+artifact attestations, the Sigstore TUF root, mise, PyPI, npm,
 dl.k8s.io, get.helm.sh and similar). The rule is **always removed before the
 agent starts**, even when mise is skipped. If the removal cannot be verified,
 or the effective policy is not the sandbox's own (a gateway-wide global

@@ -36,7 +36,8 @@ network_policies:
   # reopen every repo). Instead every github.com / api.github.com endpoint below
   # binds the session's provider instance, which tells OpenShell where the token
   # placeholder may be resolved. OpenShell requires overlapping endpoints on one
-  # host to agree on the binding, so mise_bootstrap's GitHub endpoints carry it too.
+  # host to agree on the binding, so mise_bootstrap's GitHub endpoints carry it too
+  # (plus raw.githubusercontent.com, where only mise sends the token).
   github_git:
     name: github-git
     endpoints:
@@ -403,6 +404,33 @@ network_policies:
           - allow:
               method: GET
               path: "/repos/*/*/git/refs/tags/**"
+          # Provenance checks for lockfile entries with provenance =
+          # "github-attestations": the attestation bundle for an artifact
+          # digest, and the repo's metadata (public vs private picks the
+          # Sigstore instance).
+          - allow:
+              method: GET
+              path: "/repos/*/*/attestations/**"
+          - allow:
+              method: GET
+              path: "/repos/*/*"
+      # mise sends GITHUB_TOKEN to raw.githubusercontent.com too (aqua cosign
+      # keys, github_content packages), so an unbound endpoint fails with
+      # credential_endpoint_mismatch. The installation token is scoped to the
+      # target repo and stays on a GitHub-operated host; read-only methods only.
+      - host: raw.githubusercontent.com
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        credential_binding:
+          provider: "{{.GitHubProvider}}"
+        rules:
+          - allow:
+              method: GET
+              path: "/**"
+          - allow:
+              method: HEAD
+              path: "/**"
       - host: objects.githubusercontent.com
         port: 443
         protocol: rest
@@ -455,6 +483,13 @@ network_policies:
         enforcement: enforce
         access: read-only
       - host: storage.googleapis.com
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-only
+      # Sigstore's public-good TUF root, which the attestation verification
+      # needs to trust the signing certificates. Static public files, no token.
+      - host: tuf-repo-cdn.sigstore.dev
         port: 443
         protocol: rest
         enforcement: enforce

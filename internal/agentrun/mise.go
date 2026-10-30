@@ -414,15 +414,25 @@ func runMisePhase(ctx context.Context, cfg *Config, sandboxName string, plan *ca
 		fmt.Printf("[agent-run] mise: hardened install (%s; trusting %s only); --mise-unsafe disables this\n", miseHardenEnv, strings.Join(found, ", "))
 	}
 	fmt.Printf("[agent-run] mise: installing toolchain (cache: %s)...\n", state)
+	// With a lockfile, install strictly from it (--locked): a plain install
+	// also refreshes mise.lock for every tool and every platform it lists,
+	// downloading and re-verifying other platforms' artifacts and rewriting
+	// the repo's lockfile in the agent's working tree.
+	lock, lerr := sandboxSh(ctx, sandboxName, "cd "+sandboxRepoDir+" && find . -maxdepth 3 -name 'mise*.lock' -print -quit")
+	locked := lerr == nil && strings.TrimSpace(lock) != ""
 	start := time.Now()
-	install := miseInstallScript(found, cfg.MiseUnsafe)
+	install := miseInstallScript(found, cfg.MiseUnsafe, locked)
 	if err := execCmd(ctx, "openshell", "sandbox", "exec", "-n", sandboxName, "--", "bash", "-c", install); err != nil {
 		// The sandbox is deleted right after this returns, so surface the
 		// denied hosts now (`openshell logs`, v0.1.4 main.rs Logs: -n, --since,
 		// --source sandbox).
 		// Detached: after a Ctrl-C the evidence is still worth collecting.
 		printDeniedEgress(detached(ctx), sandboxName)
-		return fmt.Errorf("mise install failed: %w (if a tool needs a host outside the bootstrap allowlist, re-run with --mise-allow-host <host>[:port]; denied connections, if any, are listed above because the sandbox is deleted on exit)", err)
+		hint := ""
+		if locked {
+			hint = "; with --locked, a tool or platform missing from mise.lock fails: run `mise lock` in the repo and commit mise.lock"
+		}
+		return fmt.Errorf("mise install failed: %w (if a tool needs a host outside the bootstrap allowlist, re-run with --mise-allow-host <host>[:port]; denied connections, if any, are listed above because the sandbox is deleted on exit%s)", err, hint)
 	}
 	fmt.Printf("[agent-run] mise: install finished in %s (cache: %s)\n", time.Since(start).Round(100*time.Millisecond), state)
 
@@ -436,8 +446,7 @@ func runMisePhase(ctx context.Context, cfg *Config, sandboxName string, plan *ca
 		fmt.Printf("[agent-run] WARN: mise: could not list installed tools: %v\n", err)
 	}
 
-	lock, lerr := sandboxSh(ctx, sandboxName, "cd "+sandboxRepoDir+" && find . -maxdepth 3 -name 'mise*.lock' -print -quit")
-	if lerr == nil && strings.TrimSpace(lock) != "" {
+	if locked {
 		fmt.Println("[agent-run] mise: mise.lock present; lockfile checksums enforced")
 	} else {
 		fmt.Println("[agent-run] WARN: mise: no mise.lock found; downloads are not checksum-pinned. Run `mise lock` in the repo and commit mise.lock")
@@ -469,17 +478,23 @@ const dependencyCooldownOffEnv = "MISE_MINIMUM_RELEASE_AGE=0s UV_EXCLUDE_NEWER=f
 // trusts exactly the detected config files (paranoid mode needs each file
 // trusted, and --yes does not answer trust prompts there) and installs with
 // miseHardenEnv. With --mise-unsafe it trusts the whole repo and runs mise
-// with its defaults and no dependency cooldown.
-func miseInstallScript(found []string, unsafe bool) string {
+// with its defaults and no dependency cooldown. With locked (the repo has a
+// mise.lock) the install is `mise install --locked`: versions, URLs and
+// checksums come from the lockfile, which is left unchanged.
+func miseInstallScript(found []string, unsafe, locked bool) string {
 	prefix := "source ~/.profile 2>/dev/null; cd " + sandboxRepoDir + " && "
+	install := "mise install --yes"
+	if locked {
+		install = "mise install --locked --yes"
+	}
 	if unsafe {
-		return prefix + "export " + dependencyCooldownOffEnv + " && mise trust " + sandboxRepoDir + " && mise install --yes"
+		return prefix + "export " + dependencyCooldownOffEnv + " && mise trust " + sandboxRepoDir + " && " + install
 	}
 	trust := make([]string, 0, len(found))
 	for _, f := range found {
 		trust = append(trust, "mise trust "+shellQuote(f))
 	}
-	return prefix + "export " + miseHardenEnv + " && " + strings.Join(trust, " && ") + " && mise install --yes"
+	return prefix + "export " + miseHardenEnv + " && " + strings.Join(trust, " && ") + " && " + install
 }
 
 // printDeniedEgress prints the sandbox log lines that mention a denial, so the
