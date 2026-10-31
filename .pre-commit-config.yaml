@@ -17,7 +17,7 @@ repos:
   # same renovate version (rev == renovate@<rev>) and same invocation. pass_filenames is off so the
   # validator discovers the config from the repo root, exactly as CI does; `files` only triggers the hook.
   - repo: https://github.com/renovatebot/pre-commit-hooks
-    rev: 44.188.4
+    rev: 44.192.2
     hooks:
       - id: renovate-config-validator
         args: ['--strict']
