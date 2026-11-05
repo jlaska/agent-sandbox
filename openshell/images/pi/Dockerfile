@@ -12,9 +12,9 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # a version younger than the cooldown fails the build with ETARGET. Renovate waits the same
 # 3 days (minimumReleaseAge in .github/renovate.json5) before proposing a bump.
 # renovate: datasource=npm depName=@earendil-works/pi-coding-agent
-ARG PI_VERSION=1.4.0
+ARG PI_VERSION=1.5.0
 # renovate: datasource=npm depName=pi-provider-litellm
-ARG PI_LITELLM_VERSION=4.5.0
+ARG PI_LITELLM_VERSION=4.7.2
 ARG REVISION=unknown
 ARG CREATED=unknown
 
