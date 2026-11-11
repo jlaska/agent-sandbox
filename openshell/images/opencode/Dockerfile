@@ -14,7 +14,7 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 #   openshell/images/refresh-checksums.sh   (CI runs it with --check). Manual equivalent:
 #   gh api repos/anomalyco/opencode/releases/tags/v<ver> --jq '.assets[]|select(.name|test("^opencode-linux-(x64|arm64)\\.tar\\.gz$"))|.name+" "+.digest'
 # renovate: datasource=github-releases depName=anomalyco/opencode
-ARG OPENCODE_VERSION=1.19.4
+ARG OPENCODE_VERSION=1.19.5
 ARG OPENCODE_SHA256_AMD64=849bd6b3d959a1d2ef200ed1634a51c79a45ca236aa26665d75debd694805cce
 ARG OPENCODE_SHA256_ARM64=8568230ccd847dc93e95b9f6894379077d3e014a16b48040743573e77c23e85f
 ARG REVISION=unknown
