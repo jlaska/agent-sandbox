@@ -12,7 +12,7 @@
 #
 # apt packages are intentionally unpinned: the base image digest below pins the
 # Ubuntu archive snapshot closely enough, and Renovate bumps the digest.
-FROM nvcr.io/nvidia/base/ubuntu:26.04@sha256:3cacfd2cba1b5fe1b80c424b7863dad960d75e2edca076c18deb5bd32b3c0740
+FROM nvcr.io/nvidia/base/ubuntu:26.04@sha256:714d221109173e322eb73204a88cdc242b8ac269a463a80785f35d0f0e0762fb
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
@@ -37,7 +37,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # node (official tarball, SHASUMS256 verified). npm ships inside the tarball.
 # renovate: datasource=node-version depName=node
-ARG NODE_VERSION=24.22.2
+ARG NODE_VERSION=24.22.3
 # Download scratch space for the tool installs below.
 WORKDIR /tmp
 RUN set -eux; \
@@ -52,7 +52,7 @@ RUN set -eux; \
 
 # mise (single binary; checksum from the release's SHASUMS256.txt). CalVer: use loose versioning.
 # renovate: datasource=github-releases depName=jdx/mise versioning=loose
-ARG MISE_VERSION=2026.10.24
+ARG MISE_VERSION=2026.11.8
 RUN set -eux; \
     arch="$(dpkg --print-architecture)"; \
     case "$arch" in amd64) march=x64 ;; arm64) march=arm64 ;; *) echo "unsupported arch $arch" >&2; exit 1 ;; esac; \
@@ -65,7 +65,7 @@ RUN set -eux; \
 
 # uv (checksum from the release's .sha256 sidecar)
 # renovate: datasource=github-releases depName=astral-sh/uv
-ARG UV_VERSION=0.13.6
+ARG UV_VERSION=0.13.8
 RUN set -eux; \
     arch="$(dpkg --print-architecture)"; \
     case "$arch" in amd64) uarch=x86_64 ;; arm64) uarch=aarch64 ;; *) echo "unsupported arch $arch" >&2; exit 1 ;; esac; \
@@ -81,7 +81,7 @@ RUN set -eux; \
 
 # gh (checksum from gh_<ver>_checksums.txt)
 # renovate: datasource=github-releases depName=cli/cli
-ARG GH_VERSION=2.103.3
+ARG GH_VERSION=2.104.0
 RUN set -eux; \
     arch="$(dpkg --print-architecture)"; \
     f="gh_${GH_VERSION}_linux_${arch}.tar.gz"; \
